@@ -1,0 +1,13 @@
+pandas
+numpy
+lightgbm
+torch
+scikit-learn
+joblib
+tqdm
+optuna
+networkx
+gensim
+requests
+beautifulsoup4
+keibascraper
