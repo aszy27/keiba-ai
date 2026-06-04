@@ -1,0 +1,51 @@
+# ==========================================
+# Pythonのキャッシュファイル
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# ==========================================
+# データ関連（大容量CSVや一時キャッシュを除外）
+# ==========================================
+data/**/*.csv
+data/**/*.pkl
+data/train/
+data/val/
+data/test/
+
+# 念のため個別ファイルも明示的に除外
+data/oof_features_cache.pkl
+data/breeder_data_progress.csv
+data/horse_vectors.csv
+data/lap_data_progress.csv
+data/master_course_data.csv
+data/master_horse_data.csv
+data/return_data_progress.csv
+data/training_data_progress.csv
+
+# ==========================================
+# モデル・パラメータ・実験ログ（GitHub容量制限対策）
+# ==========================================
+models/*.json
+models/*.txt
+models/*.pth
+models/*.pkl
+models/*.db
+
+# ==========================================
+# 予測・評価の出力フォルダ
+# ==========================================
+predict/
+result/
+
+# ==========================================
+# 開発環境・エディタ設定
+# ==========================================
+.idea/
+.vscode/
+.env
+.venv/
+virenv/
