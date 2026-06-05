@@ -66,15 +66,12 @@ def get_headers():
 
 
 def get_soup(session, url):
-    """ ★ 修正: 200と404以外はすべて一撃で 'BLOCK' と判定するように防衛線を一新 """
     try:
         res = session.get(url, headers=get_headers(), timeout=20)
 
-        # 1. ページが物理的に存在しない404だけは「データなし(正常)」としてスルー
         if res.status_code == 404:
             return "NO_DATA"
 
-        # 2. 【最重要】400(Bad Request), 403, 429, 503など、200以外のエラーコードはすべて一撃でBLOCKとする
         if res.status_code != 200:
             return "BLOCK"
 
@@ -88,14 +85,12 @@ def get_soup(session, url):
 
         soup = BeautifulSoup(html, "html.parser")
 
-        # 3. タイトルによるアクセスブロック画面（200で返ってくる巧妙な規制画面）の検知
         if soup.title:
             title_text = soup.title.get_text()
             if any(w in title_text for w in
                    ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]):
                 return "BLOCK"
 
-        # 4. 【サイレントBAN対策】中身が空っぽ、あるいは正常な競馬ページ構造（共通タグ）が皆無な場合も偽装ブロックとみなす
         if not soup.find(id=re.compile("header|container|main")) and not soup.find(
                 class_=re.compile("Race|Header|Layout")):
             return "BLOCK"
@@ -106,7 +101,7 @@ def get_soup(session, url):
 
 
 def parse_lap(soup, race_id):
-    if soup in ["BLOCK", "NETWORK_ERROR"]: return "BLOCK"
+    if isinstance(soup, str) and soup in ["BLOCK", "NETWORK_ERROR"]: return "BLOCK"
     lap_block = {"race_id": race_id}
     try:
         pace_type = "Unknown"
@@ -155,7 +150,7 @@ def parse_lap(soup, race_id):
 
 
 def parse_return(soup, race_id):
-    if soup in ["BLOCK", "NETWORK_ERROR"]: return "BLOCK"
+    if isinstance(soup, str) and soup in ["BLOCK", "NETWORK_ERROR"]: return "BLOCK"
     try:
         tables = soup.find_all("table", class_="Payout_Detail_Table")
         if not tables: return "NO_DATA"
@@ -186,7 +181,7 @@ def parse_return(soup, race_id):
 def parse_training(session, race_id):
     url = f"https://race.netkeiba.com/race/oikiri.html?race_id={race_id}"
     soup = get_soup(session, url)
-    if isinstance(soup, str): return soup  # BLOCK, NO_DATA, NETWORK_ERROR をそのまま引き継ぐ
+    if isinstance(soup, str): return soup  # 文字列ならそのままエラーコードを返す
     try:
         table = soup.find("table", class_=re.compile(r"OikiriTable|race_table_01"))
         if not table: return "NO_DATA"
@@ -402,8 +397,8 @@ def main():
                 url = f"https://race.netkeiba.com/race/result.html?race_id={rid}"
                 soup = get_soup(session, url)
 
-                # ★ 修正: 400エラー等のあらゆる通信制限(BLOCK)を感知したら即緊急停止
-                if soup in ["BLOCK", "NETWORK_ERROR"]:
+                # ★ 修正: isinstance を追加して DataFrame による比較クラッシュを完全防御
+                if isinstance(soup, str) and soup in ["BLOCK", "NETWORK_ERROR"]:
                     print(f"\n🚨 アクセス制限または通信異常(BLOCK)を検知しました。処理を即座に安全停止します。")
                     flush_buffers(buf_lap, buf_return, buf_train)
                     sys.exit(1)
@@ -411,7 +406,7 @@ def main():
                 if isinstance(soup, BeautifulSoup):
                     if missing_lap:
                         d = parse_lap(soup, rid)
-                        if d == "BLOCK":
+                        if isinstance(d, str) and d == "BLOCK":
                             print(f"\n🚨 アクセス制限（BLOCK）を検知しました。")
                             flush_buffers(buf_lap, buf_return, buf_train)
                             sys.exit(1)
@@ -423,7 +418,7 @@ def main():
 
                     if missing_return:
                         d = parse_return(soup, rid)
-                        if d == "BLOCK":
+                        if isinstance(d, str) and d == "BLOCK":
                             print(f"\n🚨 アクセス制限（BLOCK）を検知しました。")
                             flush_buffers(buf_lap, buf_return, buf_train)
                             sys.exit(1)
@@ -439,7 +434,8 @@ def main():
             if missing_train:
                 res_t = parse_training(session, rid)
 
-                if res_t in ["BLOCK", "NETWORK_ERROR"]:
+                # ★ 修正: isinstance を追加して DataFrame 判定による ValueError を完全克服！
+                if isinstance(res_t, str) and res_t in ["BLOCK", "NETWORK_ERROR"]:
                     print(f"\n🚨 アクセス制限または通信異常(BLOCK)を検知しました。処理を即座に安全停止します。")
                     flush_buffers(buf_lap, buf_return, buf_train)
                     sys.exit(1)
@@ -447,7 +443,7 @@ def main():
                 if isinstance(res_t, pd.DataFrame):
                     buf_train.append(res_t)
                     done_train.add(rid)
-                elif res_t == "NO_DATA":
+                elif isinstance(res_t, str) and res_t == "NO_DATA":
                     buf_train.append(pd.DataFrame([{"race_id": rid, "horse_id": "unknown", "oikiri_rank": "C"}]))
                     done_train.add(rid)
 
@@ -489,12 +485,12 @@ def main():
             for hid in tqdm(targets_breeder, desc="Breeder Loop"):
                 d = parse_breeder(session, hid)
 
-                if d in ["BLOCK", "NETWORK_ERROR"]:
+                if isinstance(d, str) and d in ["BLOCK", "NETWORK_ERROR"]:
                     print(f"\n🚨 血統DB側からアクセス制限（BLOCK）を検知しました。処理を即座に安全停止します。")
                     if buf_breed: save_buffer_to_csv(buf_breed, BREEDER_COLS, FILE_BREEDER)
                     sys.exit(1)
 
-                if d == "NO_DATA":
+                if isinstance(d, str) and d == "NO_DATA":
                     buf_breed.append({"horse_id": hid, "breeder": "unknown", "owner": "unknown"})
                 elif isinstance(d, dict):
                     buf_breed.append(d)
