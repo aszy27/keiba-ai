@@ -27,7 +27,6 @@ PREDICT_DIR = BASE_DIR / "predict"
 
 PARAM_FILE_RANKER     = str(MODEL_BASE / "best_params.json")
 PARAM_FILE_CLF        = str(MODEL_BASE / "best_params_clf.json")
-# COMBO_THRESHOLDS_FILE = str(MODEL_BASE / "combo_thresholds.json") # ★旧Combo AI排除に伴いコメントアウト
 
 # =========================================================================
 # 学習・モデル設定
@@ -58,11 +57,10 @@ MODEL_PATHS = {
     'transformer':       str(MODEL_BASE / 'keiba_strong_full_transformer.pth'),
     'transformer_proc':  str(MODEL_BASE / 'keiba_strong_full_transformer_proc.pkl'),
     'meta_model':        str(MODEL_BASE / 'keiba_meta_confidence.txt'),
-    # 'combo_model':       str(MODEL_BASE / 'keiba_combo_model.txt'), # ★旧Combo AI排除に伴いコメントアウト
 }
 
 # =========================================================================
-# 特徴量定義
+# 特徴量定義 (oikiri_last1f を完全抹消)
 # =========================================================================
 VEC_DIM = 64
 assert VEC_DIM == 64, f"VEC_DIM={VEC_DIM} が train_graph_embedding.py の設定と一致しません。"
@@ -77,7 +75,7 @@ FEATURE_COLS = (
         'is_nige', 'prev_pos_1',
         'jockey_win_rate', 'jockey_top3_rate', 'trainer_win_rate', 'trainer_top3_rate',
         'breeder_win_rate', 'breeder_top3_rate',
-        'oikiri_score', 'oikiri_last1f', 'oikiri_missing',
+        'oikiri_score', 'oikiri_missing',  # ★ oikiri_last1f 特徴量を排除
         'prev_pace_1', 'prev_first_3f_1', 'prev_last_3f_race_1',
         'jockey_course_win', 'trainer_course_win', 'sire_course_win',
         'transformer_prob', 'race_senkou_count', 'race_senkou_ratio',
@@ -88,20 +86,13 @@ FEATURE_COLS = (
 )
 
 CAT_COLS  = ['place', 'type', 'weather', 'condition', 'horse_id', 'jockey_id', 'grade', 'breeder']
-NUM_COLS  = ['burden', 'length', 'horse_number', 'oikiri_score', 'oikiri_last1f', 'straight', 'elevation', 'has_slope']
+NUM_COLS  = ['burden', 'length', 'horse_number', 'oikiri_score', 'straight', 'elevation', 'has_slope'] # ★ oikiri_last1f を排除
 HIST_COLS = ['rank', 'last_3f', 'diff_time', 'popularity', 'grade_score', 'prize', 'pace_score', 'first_3f', 'last_3f_race']
 
 DAE_COLS       = ['rank', 'bracket', 'horse_number', 'age', 'burden', 'prize', 'last_3f', 'interval']
 DAE_LEAKY_COLS = ['rank', 'prize', 'last_3f']
 DAE_INPUT_DIM  = len(DAE_COLS)
 HIST_LEN       = 5
-
-# ★旧Combo AI排除に伴い、特徴量定義をコメントアウト
-# COMBO_FEATURE_COLS = (
-#     ['combo_s1', 'combo_s2', 'combo_s3', 'combo_sum', 'combo_prod', 'combo_gap1', 'combo_gap2',
-#      'combo_odds_sum', 'combo_odds_prod', 'combo_pop_sum', 'head_count']
-#     + [f'race_s{i + 1}' for i in range(18)]
-# )
 
 # =========================================================================
 # LightGBM ハイパーパラメータ定義とロード (3連複 Sniper 最適化版)

@@ -46,19 +46,12 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
         df['breeder'] = 'unknown'
     df['breeder'] = df['breeder'].fillna('unknown').astype(str).str.strip().str.replace(r'\s+', '', regex=True)
 
-    # 追い切り・ペースのスコア化
+    # ★修正：oikiri_last1f に依存していたロジックを完全抹消
     if 'oikiri_rank' in df.columns:
         df['oikiri_score'] = df['oikiri_rank'].astype(str).str.upper().map(OIKIRI_MAP).fillna(0).astype(int)
-        df['oikiri_last1f'] = pd.to_numeric(df['oikiri_last1f'], errors='coerce').replace(99.9, np.nan)
-        df['oikiri_missing'] = df['oikiri_last1f'].isna().astype(int)
-
-        # 🔥 FIX 3: グローバルリーク防止 (history のデータからのみメディアンを算出)
-        hist_mask = df['split_tag'] == 'history' if 'split_tag' in df.columns else pd.Series(True, index=df.index)
-        real_median = df.loc[hist_mask, 'oikiri_last1f'].median()
-        fill_val = real_median if pd.notna(real_median) else 12.5
-        df['oikiri_last1f'] = df['oikiri_last1f'].fillna(fill_val)
+        df['oikiri_missing'] = df['oikiri_rank'].isna().astype(int)  # 追い切り評価自体がない馬を1とする
     else:
-        df['oikiri_score'], df['oikiri_last1f'], df['oikiri_missing'] = 0, 12.5, 1
+        df['oikiri_score'], df['oikiri_missing'] = 0, 1
 
     if 'pace_type' in df.columns:
         df['pace_score'] = df['pace_type'].astype(str).str.upper().map(PACE_MAP).fillna(0).astype(int)
@@ -100,7 +93,6 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
 
     df['run_count'] = grouped.cumcount()
 
-    # 🔥 FIX 1: センチネルを -1 から 0 に変更。モデルが「最強の順位」と勘違いするのを防ぐ
     for i in range(1, 6):
         df[f'prev_rank_{i}'] = pd.to_numeric(grouped['rank'].shift(i), errors='coerce').fillna(0)
         df[f'prev_diff_{i}'] = grouped['diff_time'].shift(i).fillna(1.0)
@@ -132,7 +124,6 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
     else:
         df['jockey_change'] = 0
 
-    # 🔥 FIX 1 追記: センチネル変更に伴い、0（過去戦歴なし）をスキップして平均順位を計算
     rank_cols = [f'prev_rank_{i}' for i in range(1, 6)]
     df['avg_rank_5'] = df[rank_cols].replace(0, np.nan).mean(axis=1).fillna(0)
 
@@ -153,9 +144,8 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
     df[vec_cols] = df[vec_cols].fillna(0.0)
 
     # ========================================
-    # 累積成績 (予測対象日の分母肥大化バグを完全解消)
+    # 累積成績
     # ========================================
-    # 🔥 FIX 2: 予測対象レース（target）が分母を汚染しないよう、カウント対象をhistory（過去実績）のみに限定するフラグを作成
     df['_is_history_ride'] = (df['split_tag'] == 'history').astype(int) if 'split_tag' in df.columns else 1
 
     for col, prefix in [('jockey_id', 'jockey'), ('trainer_id', 'trainer'), ('breeder', 'breeder')]:
@@ -164,7 +154,7 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
         grp = df.groupby([col, 'race_date', 'race_id']).agg(
             race_wins=('is_win', 'sum'),
             race_top3=('is_top3', 'sum'),
-            race_rides=('_is_history_ride', 'sum')  # 👈 count から history限定の sum へ変更
+            race_rides=('_is_history_ride', 'sum')
         ).reset_index()
 
         grp = grp.sort_values(['race_date', 'race_id'])
@@ -192,7 +182,7 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
         df['sire'] = 'unknown'
 
     # ========================================
-    # コース別累積成績 (予測対象日の分母肥大化バグを完全解消)
+    # コース別累積成績
     # ========================================
     for col, feat in [('jockey_id', 'jockey_course_win'), ('trainer_id', 'trainer_course_win'),
                       ('sire', 'sire_course_win')]:
@@ -202,7 +192,7 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
 
         grp2 = df.groupby([col, 'course', 'race_date', 'race_id']).agg(
             course_wins=('is_win', 'sum'),
-            course_rides=('_is_history_ride', 'sum')  # 👈 count から history限定の sum へ変更
+            course_rides=('_is_history_ride', 'sum')
         ).reset_index()
 
         grp2 = grp2.sort_values(['race_date', 'race_id'])
@@ -216,7 +206,6 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
         df = pd.merge(df, grp2[[col, 'course', 'race_id', feat]], on=[col, 'course', 'race_id'], how='left')
         df[feat] = df[feat].fillna(0.0)
 
-    # 不要になった一時フラグの削除
     if '_is_history_ride' in df.columns:
         df = df.drop(columns=['_is_history_ride'])
 

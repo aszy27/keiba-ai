@@ -27,13 +27,10 @@ def extract_grade_from_name(name) -> str:
     """
     if pd.isna(name): return 'OP'
 
-    # 🔥 FIX 1: 末尾アンカーを撤廃し、文字列内のすべてのカッコ中身をリストで抽出
     blocks = re.findall(r'[\(（]([^\)）]+)[\)）]', str(name))
     if not blocks: return 'OP'
 
-    # カッコを順番に精査し、最初にヒットした有効なグレードを返す
     for block in blocks:
-        # 🔥 FIX 2: 空白除去に加え、障害重賞特有のドット「.」や中黒「・」も一括で除去
         tag = block.strip().replace(' ', '').replace('.', '').replace('・', '').upper()
         tag = unicodedata.normalize('NFKC', tag)
 
@@ -73,14 +70,14 @@ def load_and_merge_all_data(data_dirs):
         except Exception as e:
             print(f"   ⚠️ Breederデータ読込失敗: {e}")
 
-    # 2. Train(追い切り) データのマージ
+    # 2. Train(追い切り) データのマージ (★修正：oikiri_last1f 列を完全排除)
     if os.path.exists(FILE_TRAIN):
         try:
-            df_t = pd.read_csv(FILE_TRAIN, usecols=['race_id', 'horse_id', 'oikiri_rank', 'oikiri_last1f'],
+            df_t = pd.read_csv(FILE_TRAIN, usecols=['race_id', 'horse_id', 'oikiri_rank'],
                                dtype={'race_id': str, 'horse_id': str})
             df_t = df_t.drop_duplicates(subset=['race_id', 'horse_id'], keep='last')
-            for c in ['oikiri_rank', 'oikiri_last1f']:
-                if c in df_base.columns: df_base = df_base.drop(columns=[c])
+            if 'oikiri_rank' in df_base.columns:
+                df_base = df_base.drop(columns=['oikiri_rank'])
             df_base = pd.merge(df_base, df_t, on=['race_id', 'horse_id'], how='left')
         except Exception as e:
             print(f"   ⚠️ 追い切りデータ読込失敗: {e}")
@@ -97,13 +94,12 @@ def load_and_merge_all_data(data_dirs):
         except Exception as e:
             print(f"   ⚠️ ラップデータ読込失敗: {e}")
 
-    # 🔥 FIX 3: 特徴量エンジニアリング側で NaN センチネル（不当な格下げ）を発生させない防衛
     if 'grade' in df_base.columns:
         df_base['grade'] = df_base['grade'].fillna('OP').replace('', 'OP').astype(str)
     else:
         df_base['grade'] = 'OP'
 
-    # グレード補完 (全方位ベクトルパース)
+    # グレード補完
     if 'race_name' in df_base.columns:
         extracted = df_base['race_name'].apply(extract_grade_from_name)
         mask = extracted != 'OP'

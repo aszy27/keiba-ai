@@ -24,10 +24,10 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='lightgbm')
 
 DEVICE = torch.device(DEVICE_STR) if DEVICE_STR else torch.device("cpu")
 
-N_TRIALS_PHASE1 = 30
-N_TRIALS_PHASE2 = 40
-N_TRIALS_PHASE3 = 30
-N_TRIALS_PHASE4 = 20
+N_TRIALS_PHASE1 = 100
+N_TRIALS_PHASE2 = 100
+N_TRIALS_PHASE3 = 100
+N_TRIALS_PHASE4 = 100
 
 OPT_VAL_RATIO_PHASE1 = 0.20
 OPT_VAL_RATIO_PHASE3 = 0.15

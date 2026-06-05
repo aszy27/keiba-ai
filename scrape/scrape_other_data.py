@@ -12,6 +12,7 @@ import numpy as np
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from pathlib import Path
+import sys
 
 # ==========================================
 # ★パスの自動動的解決 (サブディレクトリ移動対策)
@@ -31,9 +32,12 @@ FILE_LAP = str(DATA_DIR / "lap_data_progress.csv")
 FILE_RETURN = str(DATA_DIR / "return_data_progress.csv")
 FILE_TRAIN = str(DATA_DIR / "training_data_progress.csv")
 
+# ==========================================
+# ★ 固定カラム定義 (タイム列は完全排除を維持)
+# ==========================================
 LAP_COLS = ["race_id", "lap_headers", "lap_times", "first_3f", "last_3f_race", "pace_type"]
 RETURN_COLS = ["race_id", "tansho", "fukusho", "wakuren", "umaren", "wide", "umatan", "sanrenpuku", "sanrentan"]
-TRAIN_COLS = ["race_id", "horse_id", "oikiri_rank", "oikiri_last1f"]
+TRAIN_COLS = ["race_id", "horse_id", "oikiri_rank"]
 BREEDER_COLS = ["horse_id", "breeder", "owner"]
 
 for f in [FILE_BREEDER, FILE_LAP, FILE_RETURN, FILE_TRAIN]:
@@ -62,14 +66,17 @@ def get_headers():
 
 
 def get_soup(session, url):
+    """ ★ 修正: 200と404以外はすべて一撃で 'BLOCK' と判定するように防衛線を一新 """
     try:
         res = session.get(url, headers=get_headers(), timeout=20)
-        if res.status_code == 429:
-            print("\n🚨 アクセス過多 (429)。5分待機...")
-            time.sleep(300)
-            return "NETWORK_ERROR"
+
+        # 1. ページが物理的に存在しない404だけは「データなし(正常)」としてスルー
         if res.status_code == 404:
             return "NO_DATA"
+
+        # 2. 【最重要】400(Bad Request), 403, 429, 503など、200以外のエラーコードはすべて一撃でBLOCKとする
+        if res.status_code != 200:
+            return "BLOCK"
 
         try:
             html = res.content.decode('euc-jp')
@@ -79,12 +86,27 @@ def get_soup(session, url):
             except UnicodeDecodeError:
                 html = res.content.decode('utf-8', errors='replace')
 
-        return BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 3. タイトルによるアクセスブロック画面（200で返ってくる巧妙な規制画面）の検知
+        if soup.title:
+            title_text = soup.title.get_text()
+            if any(w in title_text for w in
+                   ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]):
+                return "BLOCK"
+
+        # 4. 【サイレントBAN対策】中身が空っぽ、あるいは正常な競馬ページ構造（共通タグ）が皆無な場合も偽装ブロックとみなす
+        if not soup.find(id=re.compile("header|container|main")) and not soup.find(
+                class_=re.compile("Race|Header|Layout")):
+            return "BLOCK"
+
+        return soup
     except:
         return "NETWORK_ERROR"
 
 
 def parse_lap(soup, race_id):
+    if soup in ["BLOCK", "NETWORK_ERROR"]: return "BLOCK"
     lap_block = {"race_id": race_id}
     try:
         pace_type = "Unknown"
@@ -133,6 +155,7 @@ def parse_lap(soup, race_id):
 
 
 def parse_return(soup, race_id):
+    if soup in ["BLOCK", "NETWORK_ERROR"]: return "BLOCK"
     try:
         tables = soup.find_all("table", class_="Payout_Detail_Table")
         if not tables: return "NO_DATA"
@@ -163,50 +186,26 @@ def parse_return(soup, race_id):
 def parse_training(session, race_id):
     url = f"https://race.netkeiba.com/race/oikiri.html?race_id={race_id}"
     soup = get_soup(session, url)
-    if isinstance(soup, str): return soup
+    if isinstance(soup, str): return soup  # BLOCK, NO_DATA, NETWORK_ERROR をそのまま引き継ぐ
     try:
         table = soup.find("table", class_=re.compile(r"OikiriTable|race_table_01"))
         if not table: return "NO_DATA"
         rows = table.find_all("tr")
         data_list = []
-        for i, row in enumerate(rows):
+        for row in rows:
             try:
                 horse_a = row.find("a", href=re.compile(r"/horse/\d+"))
                 if not horse_a: continue
                 horse_id = re.search(r'/horse/(\d+)', horse_a['href']).group(1)
+
                 oikiri_rank = "C"
                 rank_elem = row.find("td", class_=re.compile(r"Oikiri_Rank|Rank"))
                 if rank_elem: oikiri_rank = rank_elem.get_text(strip=True) or "C"
 
-                last_1f = 99.9
-                search_rows = [row]
-
-                if i + 1 < len(rows):
-                    next_row = rows[i + 1]
-                    if not next_row.find("a", href=re.compile(r"/horse/\d+")):
-                        search_rows.append(next_row)
-
-                found_time = False
-                for r in search_rows:
-                    time_tds = r.find_all("td", class_=re.compile("Oikiri_Time|Time"))
-                    if time_tds:
-                        try:
-                            val = time_tds[-1].get_text(strip=True)
-                            if val and val.replace('.', '', 1).isdigit():
-                                last_1f = float(val)
-                                found_time = True
-                        except:
-                            pass
-                    else:
-                        for td in reversed(r.find_all("td")):
-                            if re.match(r"^\d{1,2}\.\d$", td.get_text(strip=True)):
-                                last_1f = float(td.get_text(strip=True))
-                                found_time = True
-                                break
-                    if found_time: break
                 data_list.append({
-                    "race_id": race_id, "horse_id": horse_id,
-                    "oikiri_rank": oikiri_rank, "oikiri_last1f": last_1f
+                    "race_id": race_id,
+                    "horse_id": horse_id,
+                    "oikiri_rank": oikiri_rank
                 })
             except:
                 continue
@@ -265,17 +264,60 @@ def save_buffer_to_csv(buf, cols, filepath, is_concat=False):
     df.to_csv(filepath, index=False, encoding='utf-8-sig', mode='a', header=header)
 
 
-def load_done(path, key):
-    if os.path.exists(path):
+def load_done_with_filter(path, key, category=None):
+    if not os.path.exists(path):
+        return set()
+    try:
+        df = pd.read_csv(path, dtype=str, encoding='utf-8-sig')
+        if df.empty: return set()
+
+        if category == 'train':
+            invalid_mask = df['horse_id'].isnull() | (df['horse_id'] == 'unknown') | df['oikiri_rank'].isnull()
+            invalid_ids = set(df.loc[invalid_mask, 'race_id'].dropna().unique())
+            return set(df['race_id'].dropna().unique()) - invalid_ids
+
+        elif category == 'lap':
+            invalid_mask = df['lap_times'].isnull() | (df['lap_times'] == '')
+            invalid_ids = set(df.loc[invalid_mask, 'race_id'].dropna().unique())
+            return set(df['race_id'].dropna().unique()) - invalid_ids
+
+        elif category == 'return':
+            check_cols = [c for c in ['tansho', 'fukusho', 'sanrenpuku'] if c in df.columns]
+            if check_cols:
+                invalid_mask = df[check_cols].isnull().all(axis=1)
+                invalid_ids = set(df.loc[invalid_mask, 'race_id'].dropna().unique())
+                return set(df['race_id'].dropna().unique()) - invalid_ids
+
+        return set(df[key].dropna().unique())
+    except:
+        return set()
+
+
+def sanitize_existing_files():
+    print("🧹 既存の進捗CSVから不完全なデータ（unknown馬など）を自動検知・クレンジング中...")
+    if os.path.exists(FILE_TRAIN):
         try:
-            return set(pd.read_csv(path, dtype=str, encoding='utf-8-sig')[key].dropna().unique())
+            df = pd.read_csv(FILE_TRAIN, dtype=str, encoding='utf-8-sig')
+            before = len(df)
+            df = df[df['race_id'].notnull() & df['horse_id'].notnull() & (df['horse_id'] != 'unknown')]
+            if len(df) < before:
+                df.to_csv(FILE_TRAIN, index=False, encoding='utf-8-sig')
+                print(f"   📊 調教データ: 過去の不完全な {before - len(df)} 行を抹消し、適正化しました。")
         except Exception as e:
-            print(f"⚠️ 既取得リストの読み込みに失敗 ({path}): {e}")
-            return set()
-    return set()
+            print(f"   ⚠️ 調教データの自動クレンジング失敗: {e}")
+
+    if os.path.exists(FILE_LAP):
+        try:
+            df = pd.read_csv(FILE_LAP, dtype=str, encoding='utf-8-sig')
+            before = len(df)
+            df = df[df['race_id'].notnull() & df['lap_times'].notnull() & (df['lap_times'] != '')]
+            if len(df) < before:
+                df.to_csv(FILE_LAP, index=False, encoding='utf-8-sig')
+                print(f"   📊 ラップデータ: 過去の不完全な {before - len(df)} 行を抹消し、適正化しました。")
+        except Exception as e:
+            print(f"   ⚠️ ラップデータの自動クレンジング失敗: {e}")
 
 
-# ★ 年数指定の個別スキャンから、存在する全ての race_data_*.csv を一括全スキャンする方式に変更
 def get_all_race_ids():
     found_ids = []
     for d in DATA_SEARCH_DIRS:
@@ -286,31 +328,64 @@ def get_all_race_ids():
                 ids = df['race_id'].unique().tolist()
                 found_ids.extend(ids)
                 print(f"   📂 {os.path.basename(fpath)} から {len(ids)} レース検出")
-            except Exception as e:
-                print(f"   ⚠️ 読み込み失敗: {fpath} ({e})")
+            except:
+                pass
     return sorted(list(set(found_ids)))
 
 
+def flush_buffers(buf_lap, buf_return, buf_train):
+    if buf_lap: save_buffer_to_csv(buf_lap, LAP_COLS, FILE_LAP)
+    if buf_return: save_buffer_to_csv(buf_return, RETURN_COLS, FILE_RETURN)
+    if buf_train: save_buffer_to_csv(buf_train, TRAIN_COLS, FILE_TRAIN, is_concat=True)
+    print("💾 取得済みのバッファデータをすべて安全にセーブしました。")
+
+
 def main():
-    print("🛡️ ステルスデータ収集 (Smart Target & Bug-Free Mode)")
+    print("🛡️ ステルスデータ収集 (Smart Target & BLOCK緊急停止 & 自動穴埋め版)")
+    sanitize_existing_files()
     session = create_session()
 
     print("\n=== [Phase 1] レース拡張データ収集 (自動ファイルスキャン版) ===")
 
-    done_lap = load_done(FILE_LAP, 'race_id')
-    done_return = load_done(FILE_RETURN, 'race_id')
-    done_train = load_done(FILE_TRAIN, 'race_id')
+    done_lap = load_done_with_filter(FILE_LAP, 'race_id', 'lap')
+    done_return = load_done_with_filter(FILE_RETURN, 'race_id', 'return')
+    done_train = load_done_with_filter(FILE_TRAIN, 'race_id', 'train')
 
     print("📅 既存のフォルダ内レースデータをスキャン中...")
     target_ids = get_all_race_ids()
 
     if not target_ids:
         print("❌ 対象となるベースのレースデータ（race_data_*.csv）が見つかりません。")
+        return
+
+    needed_ids = []
+    for rid in target_ids:
+        try:
+            year = int(str(rid)[:4])
+        except:
+            continue
+
+        is_return_target = (year >= 2024)
+        missing_lap = (rid not in done_lap)
+        missing_train = (rid not in done_train)
+        missing_return = (is_return_target and rid not in done_return)
+
+        if missing_lap or missing_train or missing_return:
+            needed_ids.append(rid)
+
+    if not needed_ids:
+        print("   ✅ すべてのレースの拡張データは収集・補完済みです。")
     else:
-        needed_ids = []
-        for rid in target_ids:
+        random.shuffle(needed_ids)
+        print(f"   🎯 差分・穴埋め収集の対象レース数: {len(needed_ids)} 件")
+
+        buf_lap = []
+        buf_return = []
+        buf_train = []
+        request_count = 0
+
+        for rid in tqdm(needed_ids, desc="Scraping Progress"):
             try:
-                # race_id（12桁）の先頭4桁から自動で年を割り出し
                 year = int(str(rid)[:4])
             except:
                 continue
@@ -320,85 +395,81 @@ def main():
             missing_train = (rid not in done_train)
             missing_return = (is_return_target and rid not in done_return)
 
-            if missing_lap or missing_train or missing_return:
-                needed_ids.append(rid)
+            request_count += 1
 
-        if not needed_ids:
-            print("   ✅ すべてのレースの拡張データは収集済みです。")
-        else:
-            random.shuffle(needed_ids)
-            print(f"   🎯 差分収集の対象レース数: {len(needed_ids)} 件")
+            # --- 1. 結果ページ (Lap / Return) ---
+            if missing_lap or missing_return:
+                url = f"https://race.netkeiba.com/race/result.html?race_id={rid}"
+                soup = get_soup(session, url)
 
-            buf_lap = []
-            buf_return = []
-            buf_train = []
-            request_count = 0
+                # ★ 修正: 400エラー等のあらゆる通信制限(BLOCK)を感知したら即緊急停止
+                if soup in ["BLOCK", "NETWORK_ERROR"]:
+                    print(f"\n🚨 アクセス制限または通信異常(BLOCK)を検知しました。処理を即座に安全停止します。")
+                    flush_buffers(buf_lap, buf_return, buf_train)
+                    sys.exit(1)
 
-            for rid in tqdm(needed_ids, desc="Scraping Progress"):
-                try:
-                    year = int(str(rid)[:4])
-                except:
-                    continue
+                if isinstance(soup, BeautifulSoup):
+                    if missing_lap:
+                        d = parse_lap(soup, rid)
+                        if d == "BLOCK":
+                            print(f"\n🚨 アクセス制限（BLOCK）を検知しました。")
+                            flush_buffers(buf_lap, buf_return, buf_train)
+                            sys.exit(1)
+                        elif d != "NO_DATA":
+                            buf_lap.append(d)
+                        else:
+                            buf_lap.append({"race_id": rid, "pace_type": "Unknown"})
+                        done_lap.add(rid)
 
-                is_return_target = (year >= 2024)
-                missing_lap = (rid not in done_lap)
-                missing_train = (rid not in done_train)
-                missing_return = (is_return_target and rid not in done_return)
+                    if missing_return:
+                        d = parse_return(soup, rid)
+                        if d == "BLOCK":
+                            print(f"\n🚨 アクセス制限（BLOCK）を検知しました。")
+                            flush_buffers(buf_lap, buf_return, buf_train)
+                            sys.exit(1)
+                        elif d != "NO_DATA":
+                            buf_return.append(d)
+                        else:
+                            buf_return.append({"race_id": rid})
+                        done_return.add(rid)
 
-                request_count += 1
+                time.sleep(random.uniform(1.0, 2.0))
 
-                if missing_lap or missing_return:
-                    url = f"https://race.netkeiba.com/race/result.html?race_id={rid}"
-                    soup = get_soup(session, url)
-                    if isinstance(soup, BeautifulSoup):
-                        if missing_lap:
-                            d = parse_lap(soup, rid)
-                            if d != "NO_DATA":
-                                buf_lap.append(d)
-                            else:
-                                buf_lap.append({"race_id": rid, "pace_type": "Unknown"})
-                            done_lap.add(rid)
+            # --- 2. 追い切りページ (調教評価) ---
+            if missing_train:
+                res_t = parse_training(session, rid)
 
-                        if missing_return:
-                            d = parse_return(soup, rid)
-                            if d != "NO_DATA":
-                                buf_return.append(d)
-                            else:
-                                buf_return.append({"race_id": rid})
-                            done_return.add(rid)
+                if res_t in ["BLOCK", "NETWORK_ERROR"]:
+                    print(f"\n🚨 アクセス制限または通信異常(BLOCK)を検知しました。処理を即座に安全停止します。")
+                    flush_buffers(buf_lap, buf_return, buf_train)
+                    sys.exit(1)
 
-                    time.sleep(random.uniform(1.0, 2.0))
+                if isinstance(res_t, pd.DataFrame):
+                    buf_train.append(res_t)
+                    done_train.add(rid)
+                elif res_t == "NO_DATA":
+                    buf_train.append(pd.DataFrame([{"race_id": rid, "horse_id": "unknown", "oikiri_rank": "C"}]))
+                    done_train.add(rid)
 
-                if missing_train:
-                    res_t = parse_training(session, rid)
-                    if isinstance(res_t, pd.DataFrame):
-                        buf_train.append(res_t)
-                        done_train.add(rid)
-                    elif res_t == "NO_DATA":
-                        buf_train.append(pd.DataFrame([{"race_id": rid, "horse_id": "unknown"}]))
-                        done_train.add(rid)
+            if request_count % 10 == 0:
+                time.sleep(random.uniform(2.0, 4.0))
 
-                if request_count % 10 == 0:
-                    time.sleep(random.uniform(2.0, 4.0))
+            if request_count % 50 == 0:
+                save_buffer_to_csv(buf_lap, LAP_COLS, FILE_LAP)
+                buf_lap = []
 
-                if request_count % 50 == 0:
-                    save_buffer_to_csv(buf_lap, LAP_COLS, FILE_LAP)
-                    buf_lap = []
+                save_buffer_to_csv(buf_return, RETURN_COLS, FILE_RETURN)
+                buf_return = []
 
-                    save_buffer_to_csv(buf_return, RETURN_COLS, FILE_RETURN)
-                    buf_return = []
+                save_buffer_to_csv(buf_train, TRAIN_COLS, FILE_TRAIN, is_concat=True)
+                buf_train = []
 
-                    save_buffer_to_csv(buf_train, TRAIN_COLS, FILE_TRAIN, is_concat=True)
-                    buf_train = []
+                tqdm.write(f"☕ 休憩... ({request_count} requests)")
+                time.sleep(10)
 
-                    tqdm.write(f"☕ 休憩... ({request_count} requests)")
-                    time.sleep(10)
+        flush_buffers(buf_lap, buf_return, buf_train)
 
-            # ループ終了後に残ったバッファをすべて書き出し
-            save_buffer_to_csv(buf_lap, LAP_COLS, FILE_LAP)
-            save_buffer_to_csv(buf_return, RETURN_COLS, FILE_RETURN)
-            save_buffer_to_csv(buf_train, TRAIN_COLS, FILE_TRAIN, is_concat=True)
-
+    # --- Phase 2: 生産者データ収集 ---
     print("\n=== [Phase 2] 生産者データ収集 ===")
     if not os.path.exists(MASTER_FILE):
         print("❌ マスタファイルなし。生産者収集をスキップします。")
@@ -406,7 +477,7 @@ def main():
         try:
             df_master = pd.read_csv(MASTER_FILE, dtype=str, encoding='utf-8-sig')
             all_horses = df_master['horse_id'].dropna().unique()
-            done_breeder = load_done(FILE_BREEDER, 'horse_id')
+            done_breeder = load_done_with_filter(FILE_BREEDER, 'horse_id')
 
             targets_breeder = [h for h in all_horses if h not in done_breeder]
             random.shuffle(targets_breeder)
@@ -417,6 +488,12 @@ def main():
 
             for hid in tqdm(targets_breeder, desc="Breeder Loop"):
                 d = parse_breeder(session, hid)
+
+                if d in ["BLOCK", "NETWORK_ERROR"]:
+                    print(f"\n🚨 血統DB側からアクセス制限（BLOCK）を検知しました。処理を即座に安全停止します。")
+                    if buf_breed: save_buffer_to_csv(buf_breed, BREEDER_COLS, FILE_BREEDER)
+                    sys.exit(1)
+
                 if d == "NO_DATA":
                     buf_breed.append({"horse_id": hid, "breeder": "unknown", "owner": "unknown"})
                 elif isinstance(d, dict):
@@ -431,12 +508,13 @@ def main():
 
                 time.sleep(random.uniform(1.5, 3.0))
 
-            save_buffer_to_csv(buf_breed, BREEDER_COLS, FILE_BREEDER)
+            if buf_breed:
+                save_buffer_to_csv(buf_breed, BREEDER_COLS, FILE_BREEDER)
 
         except Exception as e:
             print(f"❌ 生産者収集エラー: {e}")
 
-    print("\n🎉 全データ収集完了！")
+    print("\n🎉 全データ収集・補完完了！")
 
 
 if __name__ == "__main__":

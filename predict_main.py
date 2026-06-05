@@ -96,6 +96,7 @@ def parse_target_ids(target_ids: list) -> list:
 
 
 def scrape_oikiri(race_id: str) -> dict:
+    """ ★ 修正：タイムのパースロジックを完全抹消。評価（ABC）のみを確実に回収する """
     url = f"https://race.netkeiba.com/race/oikiri.html?race_id={race_id}"
     result = {}
     r = _get_with_retry(url)
@@ -106,7 +107,7 @@ def scrape_oikiri(race_id: str) -> dict:
     if not table: return result
 
     rows = table.find_all("tr")
-    for i, row in enumerate(rows):
+    for row in rows:
         try:
             horse_a = row.find("a", href=re.compile(r"/horse/\d+"))
             if not horse_a: continue
@@ -118,30 +119,7 @@ def scrape_oikiri(race_id: str) -> dict:
                 oikiri_rank = rank_elem.get_text(strip=True) or "C"
                 oikiri_rank = re.sub(r'[^SABCD]', '', oikiri_rank.upper()) or "C"
 
-            last_1f = np.nan
-            search_rows = [row]
-            if i + 1 < len(rows): search_rows.append(rows[i + 1])
-
-            found_time = False
-            for r in search_rows:
-                time_tds = r.find_all("td", class_=re.compile("Oikiri_Time|Time"))
-                if time_tds:
-                    try:
-                        val = time_tds[-1].get_text(strip=True)
-                        if val and val.replace('.', '', 1).isdigit():
-                            last_1f = float(val)
-                            found_time = True
-                    except:
-                        pass
-                else:
-                    for td in reversed(r.find_all("td")):
-                        if re.match(r"^\d{1,2}\.\d$", td.get_text(strip=True)):
-                            last_1f = float(td.get_text(strip=True))
-                            found_time = True
-                            break
-                if found_time: break
-
-            result[horse_id] = {'oikiri_rank': oikiri_rank, 'oikiri_last1f': last_1f}
+            result[horse_id] = {'oikiri_rank': oikiri_rank}
         except Exception:
             continue
 
@@ -243,8 +221,7 @@ def scrape_shutuba(race_id, race_date: pd.Timestamp):
         oikiri_map = scrape_oikiri(race_id)
         df_shutuba['oikiri_rank'] = df_shutuba['horse_id'].map(
             lambda hid: oikiri_map.get(hid, {}).get('oikiri_rank', ''))
-        df_shutuba['oikiri_last1f'] = df_shutuba['horse_id'].map(
-            lambda hid: oikiri_map.get(hid, {}).get('oikiri_last1f', np.nan))
+        # ★ 修正：oikiri_last1f 列への割当を完全抹消
 
         return df_shutuba
     except Exception as e:
@@ -258,7 +235,7 @@ def conf_label(c):
     if c >= 70: return "👉 【勝負レース】 上位3頭で決着する可能性が高い。"
     if c >= 50: return "👉 【有力】 狙える水準。資金管理しながら参加。"
     if c >= 40: return "👉 【様子見】 ギリギリ許容圏。少点数で。"
-    return "👉 【見送り】 混戦模様。3連複1点は危険。"
+    return "👉 【見送り】 混戦模様. 3連複1点は危険。"
 
 
 if __name__ == "__main__":
@@ -390,7 +367,6 @@ if __name__ == "__main__":
             top1 = grp_rid.iloc[0]
             conf = conf_dict.get(rid, 50.0)
 
-            # 👑 【完全先祖返り】 表記を 3頭完全的中率 に同期
             lines = ["=" * 100, f"🤖 監督AI診断 (Race: {rid} {top1['race_name']})",
                      f"   本命馬: {top1['horse_name']} (Score: {top1['final_score']:.4f})",
                      f"   AI自信度(3頭完全的中率): {conf:.1f}%  {conf_label(conf)}", "-" * 100,

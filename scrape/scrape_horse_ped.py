@@ -76,13 +76,26 @@ def scrape_pedigree_page(horse_id, session):
 
     try:
         response = session.get(url, timeout=10)
-        if response.status_code in [429, 403]:
+
+        # 1. ページが物理的に存在しない404以外はすべて一撃で 'BLOCK' と判定
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
             return "BLOCK"
 
         response.encoding = 'euc-jp'
         soup = BeautifulSoup(response.text, "html.parser")
 
-        if soup.title and ("アクセスが集中" in soup.title.get_text() or "お手数ですが" in soup.title.get_text()):
+        # 2. タイトルによるアクセスブロック画面（正常コード200を装う擬態BAN）の検知
+        if soup.title:
+            title_text = soup.title.get_text()
+            if any(w in title_text for w in
+                   ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]):
+                return "BLOCK"
+
+        # 3. ページ構造スキャンによるサイレントBANの完全防御
+        if not soup.find(id=re.compile("header|container|main")) and not soup.find(
+                class_=re.compile("Race|Header|Layout|db")):
             return "BLOCK"
 
         data = {
@@ -178,22 +191,56 @@ def save_to_csv_safe(new_data, COLUMNS):
     df_new.to_csv(FILENAME, index=False, encoding='utf-8-sig', mode='a', header=not os.path.exists(FILENAME))
 
 
+def sanitize_existing_ped_file():
+    """ ★ 追加: 既存の血統CSVから、以前のブロック警告文が巻き込まれて保存された不完全行を全自動抹消する関数 """
+    print("🧹 既存の血統マスタCSVから不完全なデータ（ブロック警告の巻き込み行など）を自動クレンジング中...")
+    if os.path.exists(FILENAME):
+        try:
+            df = pd.read_csv(FILENAME, dtype=str, encoding='utf-8-sig')
+            before = len(df)
+
+            # 不正な文字列が入ってしまっている破損行を特定するマスク
+            invalid_keywords = ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]
+            mask = df['horse_name'].isnull()
+            for kw in invalid_keywords:
+                mask = mask | df['horse_name'].str.contains(kw, na=False)
+
+            df_clean = df[~mask & df['horse_id'].notnull()]
+            if len(df_clean) < before:
+                df_clean.to_csv(FILENAME, index=False, encoding='utf-8-sig')
+                print(f"   📊 血統マスタ: 過去の不完全な {before - len(df_clean)} 行を抹消し、適正化しました。")
+        except Exception as e:
+            print(f"   ⚠️ 血統マスタの自動クレンジング失敗: {e}")
+
+
 def main():
     print(f"\n🚀 血統データの収集 (フォルダ整理版) を開始します")
     os.makedirs(os.path.dirname(FILENAME), exist_ok=True)
+
+    # 1. 起動時に既存の血統マスタを全自動お掃除
+    sanitize_existing_ped_file()
 
     existing_ids = set()
     if os.path.exists(FILENAME):
         try:
             df_exist = pd.read_csv(FILENAME, dtype={'horse_id': str}, encoding='utf-8-sig')
             if 'horse_id' in df_exist.columns:
-                existing_ids = set(df_exist['horse_id'].astype(str))
-                print(f"📚 既存ID数: {len(existing_ids)}")
+                # クレンジングされた健全な行のIDのみを登録数としてカウント
+                invalid_keywords = ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限",
+                                    "大変混み合って"]
+                mask = df_exist['horse_name'].isnull()
+                for kw in invalid_keywords:
+                    mask = mask | df_exist['horse_name'].str.contains(kw, na=False)
 
-                if 'sire_id' in df_exist.columns:
-                    failed = df_exist[df_exist['sire_id'].isnull() | (df_exist['sire_id'] == '')]['horse_id'].astype(str)
+                df_valid = df_exist[~mask]
+                existing_ids = set(df_valid['horse_id'].dropna().astype(str))
+                print(f"📚 健全な既存マスタ登録数: {len(existing_ids)} 頭")
+
+                if 'sire_id' in df_valid.columns:
+                    failed = df_valid[df_valid['sire_id'].isnull() | (df_valid['sire_id'] == '')]['horse_id'].astype(
+                        str)
                     if len(failed) > 0:
-                        print(f"♻️ データ欠損がある {len(failed)} 頭をリトライ対象に戻します")
+                        print(f"♻️ 親IDに欠損がある {len(failed)} 頭を自動で再取得（穴埋め）対象に戻します")
                         existing_ids = existing_ids - set(failed)
         except Exception as e:
             print(f"⚠️ ファイル読み込みエラー: {e}")
@@ -202,11 +249,12 @@ def main():
     clean_targets = {hid.replace('.0', '') for hid in all_targets}
     existing_ids = {hid.replace('.0', '') for hid in existing_ids}
 
+    # 2. 自動的に「お掃除されて空いた穴」が差分ターゲットとして復活する
     target_ids = list(clean_targets - existing_ids)
-    print(f"🚀 今回収集するターゲット: {len(target_ids)} 頭")
+    print(f"🚀 今回収集するターゲット（自動穴埋め対象含む）: {len(target_ids)} 頭")
 
     if not target_ids:
-        print("✅ すべて収集済みです。")
+        print("✅ すべて収集・補完済みです。")
         return
 
     random.shuffle(target_ids)
@@ -222,10 +270,12 @@ def main():
 
             data = scrape_pedigree_page(horse_id, session)
 
+            # 3. 400エラー等の擬態BANを感知したら、ダミーデータを書き込まず即座に完全緊急シャットダウン
             if data == "BLOCK":
-                print("\n🚨 ネット競馬側からアクセス制限（BLOCK）を検知しました。")
-                print("   安全のため、ここまでのデータを保存してスクリプトを一時停止します。")
-                break
+                print(f"\n🚨 ネット競馬側からアクセス制限（BLOCK）を検知しました。処理を即座に安全停止します。")
+                if new_data:
+                    save_to_csv_safe(new_data, COLUMNS)
+                sys.exit(1)
 
             if data:
                 new_data.append(data)
