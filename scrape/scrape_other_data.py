@@ -181,7 +181,7 @@ def parse_return(soup, race_id):
 def parse_training(session, race_id):
     url = f"https://race.netkeiba.com/race/oikiri.html?race_id={race_id}"
     soup = get_soup(session, url)
-    if isinstance(soup, str): return soup  # 文字列ならそのままエラーコードを返す
+    if isinstance(soup, str): return soup
     try:
         table = soup.find("table", class_=re.compile(r"OikiriTable|race_table_01"))
         if not table: return "NO_DATA"
@@ -272,6 +272,7 @@ def load_done_with_filter(path, key, category=None):
             return set(df['race_id'].dropna().unique()) - invalid_ids
 
         elif category == 'lap':
+            # ★ 修正: lap_times が完全に白紙（空値）のものだけを不完全とみなす（NO_LAP文字列行は救済）
             invalid_mask = df['lap_times'].isnull() | (df['lap_times'] == '')
             invalid_ids = set(df.loc[invalid_mask, 'race_id'].dropna().unique())
             return set(df['race_id'].dropna().unique()) - invalid_ids
@@ -305,6 +306,7 @@ def sanitize_existing_files():
         try:
             df = pd.read_csv(FILE_LAP, dtype=str, encoding='utf-8-sig')
             before = len(df)
+            # ★ 修正: lap_times が NaN や空文字のゴミ行のみをクレンジング対象にする（NO_LAP行は適正データなので残す）
             df = df[df['race_id'].notnull() & df['lap_times'].notnull() & (df['lap_times'] != '')]
             if len(df) < before:
                 df.to_csv(FILE_LAP, index=False, encoding='utf-8-sig')
@@ -397,7 +399,6 @@ def main():
                 url = f"https://race.netkeiba.com/race/result.html?race_id={rid}"
                 soup = get_soup(session, url)
 
-                # ★ 修正: isinstance を追加して DataFrame による比較クラッシュを完全防御
                 if isinstance(soup, str) and soup in ["BLOCK", "NETWORK_ERROR"]:
                     print(f"\n🚨 アクセス制限または通信異常(BLOCK)を検知しました。処理を即座に安全停止します。")
                     flush_buffers(buf_lap, buf_return, buf_train)
@@ -413,7 +414,15 @@ def main():
                         elif d != "NO_DATA":
                             buf_lap.append(d)
                         else:
-                            buf_lap.append({"race_id": rid, "pace_type": "Unknown"})
+                            # ★ 修正: ラップが存在しない障害・海外等のレースに "NO_LAP" 刻印を押し、無限お掃除ループを完全阻止！
+                            buf_lap.append({
+                                "race_id": rid,
+                                "lap_headers": "NO_HEAD",
+                                "lap_times": "NO_LAP",
+                                "first_3f": 0.0,
+                                "last_3f_race": 0.0,
+                                "pace_type": "Unknown"
+                            })
                         done_lap.add(rid)
 
                     if missing_return:
@@ -434,7 +443,6 @@ def main():
             if missing_train:
                 res_t = parse_training(session, rid)
 
-                # ★ 修正: isinstance を追加して DataFrame 判定による ValueError を完全克服！
                 if isinstance(res_t, str) and res_t in ["BLOCK", "NETWORK_ERROR"]:
                     print(f"\n🚨 アクセス制限または通信異常(BLOCK)を検知しました。処理を即座に安全停止します。")
                     flush_buffers(buf_lap, buf_return, buf_train)

@@ -5,9 +5,6 @@ import os
 import sys
 import random
 import warnings
-import requests
-from bs4 import BeautifulSoup
-import re
 from pathlib import Path
 
 # ★ keibascraperライブラリを使用
@@ -43,70 +40,13 @@ else:
 # 自動決定されたフォルダをセット
 OUTPUT_DIR = str(DATA_DIR / FOLDER_TYPE)
 
-# ★ BAN対策用設定
-MIN_SLEEP = 2.0  # 通常待機 (秒)
+# ★ 通常待機
+MIN_SLEEP = 2.0
 MAX_SLEEP = 5.0
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"
-]
-
-
-def check_network_status(race_id):
-    """ ★ 追加: 400エラーや正常コード200を装う偽装ブロックを1発目で完全に検知する前衛防衛ロジック """
-    url = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Referer": "https://race.netkeiba.com/"
-    }
-    try:
-        res = requests.get(url, headers=headers, timeout=15)
-
-        # 1. ページが物理的に存在しない404だけは「データなし(正常)」としてスルー
-        if res.status_code == 404:
-            return "NO_DATA"
-
-        # 2. 【最重要】400(Bad Request), 403, 429など、200以外のエラーコードはすべて一撃でBLOCKとする
-        if res.status_code != 200:
-            return "BLOCK"
-
-        try:
-            html = res.content.decode('euc-jp')
-        except:
-            try:
-                html = res.content.decode('shift_jis')
-            except:
-                html = res.content.decode('utf-8', errors='replace')
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        # 3. タイトルによるアクセスブロック画面の検知
-        if soup.title:
-            title_text = soup.title.get_text()
-            if any(w in title_text for w in
-                   ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]):
-                return "BLOCK"
-
-        # 4. 中身が空っぽ、あるいは正常な競馬ページ構造（共通タグ）が皆無な場合もブロックとみなす
-        if not soup.find(id=re.compile("header|container|main")) and not soup.find(
-                class_=re.compile("Race|Header|Layout")):
-            return "BLOCK"
-
-        return "OK"
-    except:
-        return "NETWORK_ERROR"
 
 
 def safe_load(category, race_id):
-    """ ★ 修正: ネットワークチェックを噛ませてサイレント突き進みを完全ブロック """
-    status = check_network_status(race_id)
-    if status == "BLOCK" or status == "NETWORK_ERROR":
-        return "BLOCK"
-    if status == "NO_DATA":
-        return None
-
+    """ ★ 復元: エラー時でも強制終了せず、120秒待機してリトライ、ダメならNoneを返して次のレースへ進む """
     max_retries = 2
     for attempt in range(max_retries):
         try:
@@ -115,14 +55,16 @@ def safe_load(category, race_id):
             return data
         except Exception as e:
             error_msg = str(e)
-            # 単なるパースエラー、欠損エラーならデータなしとして諦める
+            # 単なるパース不具合、存在しないデータの欠損エラーなら即スキップ
             if "strptime" in error_msg or "NoneType" in error_msg or "argument 1 must be str" in error_msg:
                 return None
 
             if attempt < max_retries - 1:
-                time.sleep(10)
+                print(f"\n🚨 通信エラー感知。120秒間待機してリトライします... (原因: {error_msg})")
+                time.sleep(120)  # 2分間冷却して制限解除を待つ
             else:
-                return "BLOCK"
+                print(f"\n⚠️ リトライを諦めてこのレースをスキップし、次へ突き進みます: {race_id}")
+                return None
     return None
 
 
@@ -130,7 +72,7 @@ def scrape_race_data_safe(year):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     filename = os.path.join(OUTPUT_DIR, f"race_data_{year}.csv")
 
-    print(f"\n🚀 {year}年のデータ収集を開始します (擬態BAN完全防御版)")
+    print(f"\n🚀 {year}年のデータ収集を開始します (しぶとく走破する待機リトライモード)")
     print(f"   💾 保存先: {filename}")
     print("--------------------------------------------------")
 
@@ -161,22 +103,18 @@ def scrape_race_data_safe(year):
 
                     race_id_base = f"{year}{str(place).zfill(2)}{str(kai).zfill(2)}{str(day).zfill(2)}"
 
-                    # --- 1Rチェック (ここでもBANを検知できるようにガード) ---
+                    # 1Rチェック
                     check_id = f"{race_id_base}01"
                     if check_id in existing_ids:
                         pass
                     else:
                         check_data = safe_load("result", check_id)
-                        if check_data == "BLOCK":
-                            print(f"\n🚨 ネット競馬側からアクセス制限（BLOCK）を検知しました。処理を即座に安全停止します。")
-                            if session_data: save_to_csv(session_data, filename)
-                            sys.exit(1)
                         if check_data is None:
                             continue
 
                     print(f"\n📅 開催確認: {check_id[:-2]}")
 
-                    # --- 全レース取得 ---
+                    # 全レース取得
                     for r in rounds:
                         race_id = f"{race_id_base}{str(r).zfill(2)}"
 
@@ -190,12 +128,6 @@ def scrape_race_data_safe(year):
 
                         try:
                             data = safe_load("result", race_id)
-
-                            # BLOCKを検知したらダミーを入れずにバッファを保存して即終了
-                            if data == "BLOCK":
-                                print(f"\n🚨 アクセス制限（BLOCK）を検知しました。処理を即座に安全停止します。")
-                                if session_data: save_to_csv(session_data, filename)
-                                sys.exit(1)
 
                             if data and len(data) >= 2 and len(data[0]) > 0:
                                 race_info = data[0][0]
