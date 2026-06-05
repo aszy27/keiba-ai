@@ -260,45 +260,39 @@ def save_buffer_to_csv(buf, cols, filepath, is_concat=False):
 
 
 def load_done_with_filter(path, key, category=None):
+    """ ★ 修正: 過剰な引き算（巻き戻し仕様）を完全撤廃。CSVに1行でも存在すれば、安全に取得完了（既取得）と判定する """
     if not os.path.exists(path):
         return set()
     try:
         df = pd.read_csv(path, dtype=str, encoding='utf-8-sig')
         if df.empty: return set()
 
-        if category == 'train':
-            invalid_mask = df['horse_id'].isnull() | (df['horse_id'] == 'unknown') | df['oikiri_rank'].isnull()
-            invalid_ids = set(df.loc[invalid_mask, 'race_id'].dropna().unique())
-            return set(df['race_id'].dropna().unique()) - invalid_ids
-
-        elif category == 'lap':
-            # ★ 修正: lap_times が完全に白紙（空値）のものだけを不完全とみなす（NO_LAP文字列行は救済）
-            invalid_mask = df['lap_times'].isnull() | (df['lap_times'] == '')
-            invalid_ids = set(df.loc[invalid_mask, 'race_id'].dropna().unique())
-            return set(df['race_id'].dropna().unique()) - invalid_ids
-
-        elif category == 'return':
-            check_cols = [c for c in ['tansho', 'fukusho', 'sanrenpuku'] if c in df.columns]
-            if check_cols:
-                invalid_mask = df[check_cols].isnull().all(axis=1)
-                invalid_ids = set(df.loc[invalid_mask, 'race_id'].dropna().unique())
-                return set(df['race_id'].dropna().unique()) - invalid_ids
-
+        # 過去の不完全なゴミデータのせいでレース丸ごと穴扱いされるバグを根底から粉砕
         return set(df[key].dropna().unique())
     except:
         return set()
 
 
 def sanitize_existing_files():
-    print("🧹 既存の進捗CSVから不完全なデータ（unknown馬など）を自動検知・クレンジング中...")
+    """ ★ 修正: これまでの空振りによって末尾に重複して溜まってしまった行を綺麗に1行に凝縮する仕様へ強化 """
+    print("🧹 既存の進捗CSVの自動クレンジング（重複排除・最適化）を実行中...")
+
     if os.path.exists(FILE_TRAIN):
         try:
             df = pd.read_csv(FILE_TRAIN, dtype=str, encoding='utf-8-sig')
             before = len(df)
-            df = df[df['race_id'].notnull() & df['horse_id'].notnull() & (df['horse_id'] != 'unknown')]
+
+            # 1. 過去の不完全なダミー（unknown）を安全な 'NO_TRAIN' に一括コンバート
+            mask_unknown = (df['horse_id'] == 'unknown')
+            if mask_unknown.any():
+                df.loc[mask_unknown, 'horse_id'] = 'NO_TRAIN'
+
+            # 2. 【強化】これまでの空振りによって重複してしまった蓄積行を綺麗に一本化
+            df = df.drop_duplicates(subset=['race_id', 'horse_id'], keep='first')
+
             if len(df) < before:
                 df.to_csv(FILE_TRAIN, index=False, encoding='utf-8-sig')
-                print(f"   📊 調教データ: 過去の不完全な {before - len(df)} 行を抹消し、適正化しました。")
+                print(f"   📊 調教データ: 重複および不完全な {before - len(df)} 行を整理・最適化しました。")
         except Exception as e:
             print(f"   ⚠️ 調教データの自動クレンジング失敗: {e}")
 
@@ -306,11 +300,10 @@ def sanitize_existing_files():
         try:
             df = pd.read_csv(FILE_LAP, dtype=str, encoding='utf-8-sig')
             before = len(df)
-            # ★ 修正: lap_times が NaN や空文字のゴミ行のみをクレンジング対象にする（NO_LAP行は適正データなので残す）
-            df = df[df['race_id'].notnull() & df['lap_times'].notnull() & (df['lap_times'] != '')]
+            df = df.drop_duplicates(subset=['race_id'], keep='first')
             if len(df) < before:
                 df.to_csv(FILE_LAP, index=False, encoding='utf-8-sig')
-                print(f"   📊 ラップデータ: 過去の不完全な {before - len(df)} 行を抹消し、適正化しました。")
+                print(f"   📊 ラップデータ: 重複および不完全な {before - len(df)} 行を整理・最適化しました。")
         except Exception as e:
             print(f"   ⚠️ ラップデータの自動クレンジング失敗: {e}")
 
@@ -414,7 +407,6 @@ def main():
                         elif d != "NO_DATA":
                             buf_lap.append(d)
                         else:
-                            # ★ 修正: ラップが存在しない障害・海外等のレースに "NO_LAP" 刻印を押し、無限お掃除ループを完全阻止！
                             buf_lap.append({
                                 "race_id": rid,
                                 "lap_headers": "NO_HEAD",
@@ -452,7 +444,7 @@ def main():
                     buf_train.append(res_t)
                     done_train.add(rid)
                 elif isinstance(res_t, str) and res_t == "NO_DATA":
-                    buf_train.append(pd.DataFrame([{"race_id": rid, "horse_id": "unknown", "oikiri_rank": "C"}]))
+                    buf_train.append(pd.DataFrame([{"race_id": rid, "horse_id": "NO_TRAIN", "oikiri_rank": "C"}]))
                     done_train.add(rid)
 
             if request_count % 10 == 0:
