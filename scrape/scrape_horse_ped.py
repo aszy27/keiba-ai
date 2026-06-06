@@ -24,7 +24,7 @@ DATA_DIR = BASE_DIR / "data"
 # ==========================================
 # ★設定エリア
 # ==========================================
-MIN_SLEEP = 1.0  # 血統データベースは規制が厳しいため少し慎重に
+MIN_SLEEP = 1.0
 MAX_SLEEP = 3.0
 SAVE_INTERVAL = 100
 
@@ -77,7 +77,6 @@ def scrape_pedigree_page(horse_id, session):
     try:
         response = session.get(url, timeout=10)
 
-        # 1. ページが物理的に存在しない404以外はすべて一撃で 'BLOCK' と判定
         if response.status_code == 404:
             return None
         if response.status_code != 200:
@@ -86,14 +85,12 @@ def scrape_pedigree_page(horse_id, session):
         response.encoding = 'euc-jp'
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # 2. タイトルによるアクセスブロック画面（正常コード200を装う擬態BAN）の検知
         if soup.title:
             title_text = soup.title.get_text()
             if any(w in title_text for w in
                    ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]):
                 return "BLOCK"
 
-        # 3. ページ構造スキャンによるサイレントBANの完全防御
         if not soup.find(id=re.compile("header|container|main")) and not soup.find(
                 class_=re.compile("Race|Header|Layout|db")):
             return "BLOCK"
@@ -192,14 +189,12 @@ def save_to_csv_safe(new_data, COLUMNS):
 
 
 def sanitize_existing_ped_file():
-    """ ★ 追加: 既存の血統CSVから、以前のブロック警告文が巻き込まれて保存された不完全行を全自動抹消する関数 """
     print("🧹 既存の血統マスタCSVから不完全なデータ（ブロック警告の巻き込み行など）を自動クレンジング中...")
     if os.path.exists(FILENAME):
         try:
             df = pd.read_csv(FILENAME, dtype=str, encoding='utf-8-sig')
             before = len(df)
 
-            # 不正な文字列が入ってしまっている破損行を特定するマスク
             invalid_keywords = ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]
             mask = df['horse_name'].isnull()
             for kw in invalid_keywords:
@@ -217,7 +212,6 @@ def main():
     print(f"\n🚀 血統データの収集 (フォルダ整理版) を開始します")
     os.makedirs(os.path.dirname(FILENAME), exist_ok=True)
 
-    # 1. 起動時に既存の血統マスタを全自動お掃除
     sanitize_existing_ped_file()
 
     existing_ids = set()
@@ -225,7 +219,6 @@ def main():
         try:
             df_exist = pd.read_csv(FILENAME, dtype={'horse_id': str}, encoding='utf-8-sig')
             if 'horse_id' in df_exist.columns:
-                # クレンジングされた健全な行のIDのみを登録数としてカウント
                 invalid_keywords = ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限",
                                     "大変混み合って"]
                 mask = df_exist['horse_name'].isnull()
@@ -249,7 +242,6 @@ def main():
     clean_targets = {hid.replace('.0', '') for hid in all_targets}
     existing_ids = {hid.replace('.0', '') for hid in existing_ids}
 
-    # 2. 自動的に「お掃除されて空いた穴」が差分ターゲットとして復活する
     target_ids = list(clean_targets - existing_ids)
     print(f"🚀 今回収集するターゲット（自動穴埋め対象含む）: {len(target_ids)} 頭")
 
@@ -263,32 +255,69 @@ def main():
     new_data = []
     COLUMNS = ['horse_id', 'horse_name', 'sire_id', 'sire_name', 'dam_id', 'dam_name']
 
+    consecutive_block_count = 0  # 連続してBLOCKされた頭数
+
     try:
         for i, horse_id in enumerate(target_ids):
-            sys.stdout.write(f"\r🐎 Processing: {i + 1}/{len(target_ids)} [ID: {horse_id}] ... ")
-            sys.stdout.flush()
+            success = False
+            horse_retry_count = 0  # その馬単体でのリトライ回数
 
-            data = scrape_pedigree_page(horse_id, session)
+            while not success:
+                sys.stdout.write(f"\r🐎 Processing: {i + 1}/{len(target_ids)} [ID: {horse_id}] ... ")
+                sys.stdout.flush()
 
-            # 3. 400エラー等の擬態BANを感知したら、ダミーデータを書き込まず即座に完全緊急シャットダウン
-            if data == "BLOCK":
-                print(f"\n🚨 ネット競馬側からアクセス制限（BLOCK）を検知しました。処理を即座に安全停止します。")
+                data = scrape_pedigree_page(horse_id, session)
+
+                if data == "BLOCK":
+                    horse_retry_count += 1
+                    print(f"\n🚨 制限検知(BLOCK) [その馬のリトライ: {horse_retry_count}/2回目]")
+
+                    if new_data:
+                        save_to_csv_safe(new_data, COLUMNS)
+                        new_data = []
+
+                    # 1回目のBLOCKなら5分待ってセッションを変えて同じ馬を再開
+                    if horse_retry_count < 2:
+                        print("⏳ 冷却とIP規制解除を待つため、5分間（300秒）完全停止します...")
+                        time.sleep(300)
+                        print("♻️ 5分経過しました。セッションとUser-Agentをリフレッシュして同じ馬から再挑戦します。")
+                        session = create_session()
+                        continue
+                    else:
+                        # 2回連続で同じ馬がBLOCKされた場合、その馬の取得を諦めてスマートスキップ！
+                        print(
+                            f"⚠️ 5分待っても同じ馬 {horse_id} で即ブロックされるため、この馬は一旦スキップして次へ突き進みます。")
+                        consecutive_block_count += 1
+                        break  # whileループを強制脱出して、次の馬（forの次のループ）へ進む
+
+                if data:
+                    new_data.append(data)
+                    consecutive_block_count = 0  # 正常に1頭でも取れたら連続ブロックカウントをリセット
+                    sire = data.get('sire_name', 'X')
+                    dam = data.get('dam_name', 'X')
+                    if sire and sire != 'X':
+                        sys.stdout.write(f"✅ 父:{sire} / 母:{dam}")
+                    else:
+                        sys.stdout.write("⚠️ Missing (Empty)")
+                else:
+                    sys.stdout.write("⚠️ Error (No Data)")
+
+                success = True
+                consecutive_block_count = 0  # 正常終了時はリセット
+                time.sleep(random.uniform(MIN_SLEEP, MAX_SLEEP))
+
+            # --- 【鉄壁のプロテクトガード】 ---
+            # もしスキップして次の馬、その次の馬に進んでも、5分待機➔即ブロックが「連続3頭」続く場合、
+            # それは馬が原因ではなくあなたの現在のグローバルIP自体が完全に焼き切れています。
+            # 永久BANを防ぐため、データを全セーブして一度手動でテザリング等に切り替えてもらうために正常終了させます。
+            if consecutive_block_count >= 3:
+                print(
+                    f"\n🚨 深刻なエラー: 連続して3頭の別々の馬で待機後も即ブロックされました。現在のIPアドレスが完全にロックされています。")
+                print(
+                    f"🛡️ 安全のため、ここまでのデータをすべて保存してスクリプトを終了します。スマホのテザリングに切り替えるか、ルーターを再起動してIPを変えてから再実行してください。")
                 if new_data:
                     save_to_csv_safe(new_data, COLUMNS)
                 sys.exit(1)
-
-            if data:
-                new_data.append(data)
-                sire = data.get('sire_name', 'X')
-                dam = data.get('dam_name', 'X')
-                if sire and sire != 'X':
-                    sys.stdout.write(f"✅ 父:{sire} / 母:{dam}")
-                else:
-                    sys.stdout.write("⚠️ Missing (Empty)")
-            else:
-                sys.stdout.write("⚠️ Error")
-
-            time.sleep(random.uniform(MIN_SLEEP, MAX_SLEEP))
 
             if len(new_data) >= SAVE_INTERVAL:
                 save_to_csv_safe(new_data, COLUMNS)

@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='lightgbm')
 # ★設定: 予測したいレースID（12桁）を指定
 # ==========================================
 TARGET_IDS = [
-    "202605021211"
+    "2026090302"
 ]
 
 PLACE_MAP = {
