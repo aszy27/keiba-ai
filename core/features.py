@@ -20,7 +20,11 @@ PACE_MAP = {'H': 3, 'M': 2, 'S': 1}
 
 def feature_engineering(df, weight_mean: float = None, burden_mean: float = None):
     """
-    特徴量エンジニアリング (V7 完全リークブロック & センチネルバグ修正版)
+    特徴量エンジニアリング (V8 学習/バックテスト/本番 完全整合版)
+
+    設計原則: あるレースの特徴量は「そのレース日より前に確定していた情報」のみから
+    計算される。これにより、学習(train_main)・バックテスト(evaluate_main)・
+    本番(predict_main)の3経路が全く同じ条件で特徴量を生成する。
     """
     if weight_mean is None or burden_mean is None:
         raise ValueError(
@@ -28,8 +32,36 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
             " val/test 内の平均で埋めるとデータリークになります。"
         )
 
-    print("   -> 🛠️ 特徴量エンジニアリング (V7 Fast Defended Edition)...")
+    print("   -> 🛠️ 特徴量エンジニアリング (V8 Train/Backtest/Production Aligned Edition)...")
     df = df.copy()
+
+    # =========================================================================
+    # 🔴 FIX: 全経路（学習・バックテスト・本番）で rank と表記を統一する
+    # =========================================================================
+    # rank: train_main.py は欠損rankを99で埋めるが、evaluate/predict は埋めずに
+    #       to_numeric→NaN→0 になっており、prev_rank_* / avg_rank_5 が
+    #       学習時(99)と推論時(0)で食い違っていた。ここで一元的に正規化する。
+    #       ・history行（結果確定済み）: 非数値(中止・取消等)は 99 に統一
+    #       ・target行（本番の未確定レース）: NaN のまま維持（is_win等は自動的に0になる）
+    _rank_num = pd.to_numeric(df['rank'], errors='coerce') if 'rank' in df.columns else pd.Series(np.nan, index=df.index)
+    if 'split_tag' in df.columns:
+        _hist_mask = (df['split_tag'] == 'history')
+    else:
+        _hist_mask = pd.Series(True, index=df.index)
+    df['rank'] = _rank_num.where(~(_hist_mask & _rank_num.isna()), 99)
+
+    # condition: 学習データ(keibascraper)は「稍」表記だが、本番スクレイプは「稍重」に
+    #            なり得るため、カテゴリ特徴が unknown 化していた。「稍」に統一する。
+    if 'condition' in df.columns:
+        df['condition'] = df['condition'].astype(str).str.strip().replace({'稍重': '稍'})
+
+    # grade: keibascraperの一部年度は非重賞を「一般」、grade列が無い年度は「OP」となり、
+    #        同じクラスのレースが年度によって別カテゴリ＆grade_score(1 vs 6)に割れていた。
+    #        本番predictは「OP」を出すため、「一般」→「OP」に統一する。
+    if 'grade' in df.columns:
+        df['grade'] = df['grade'].fillna('OP').replace({'一般': 'OP'})
+    else:
+        df['grade'] = 'OP'
 
     # グレードスコア
     df['grade_score'] = df['grade'].astype(str).map(GRADE_MAP).fillna(1).astype(int)
@@ -47,9 +79,16 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
     df['breeder'] = df['breeder'].fillna('unknown').astype(str).str.strip().str.replace(r'\s+', '', regex=True)
 
     # ★修正：oikiri_last1f に依存していたロジックを完全抹消
+    # 🔴 FIX: 旧実装は「文字列がそのままS/A/B/C/Dであること」を前提にしていたため、
+    #          本番スクレイプで欠損馬が ''(空文字) になると isna()=False となり
+    #          oikiri_missing=0 と誤判定されていた（学習時はNaN→1）。
+    #          S/A/B/C/D の1文字を頑健に抽出し、抽出できない場合を missing=1 に統一する。
     if 'oikiri_rank' in df.columns:
-        df['oikiri_score'] = df['oikiri_rank'].astype(str).str.upper().map(OIKIRI_MAP).fillna(0).astype(int)
-        df['oikiri_missing'] = df['oikiri_rank'].isna().astype(int)  # 追い切り評価自体がない馬を1とする
+        # NaN を先にマスクする（astype(str) で 'NAN' となり 'A' が誤抽出されるのを防ぐ）
+        _oik = df['oikiri_rank'].astype(str).str.upper().str.extract(r'([SABCD])', expand=False)
+        _oik = _oik.mask(df['oikiri_rank'].isna())
+        df['oikiri_score'] = _oik.map(OIKIRI_MAP).fillna(0).astype(int)
+        df['oikiri_missing'] = _oik.isna().astype(int)  # 追い切り評価自体がない馬を1とする
     else:
         df['oikiri_score'], df['oikiri_missing'] = 0, 1
 
@@ -144,30 +183,44 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
     df[vec_cols] = df[vec_cols].fillna(0.0)
 
     # ========================================
-    # 累積成績
+    # 累積成績 (V8: 日付単位の排他集計に統一)
     # ========================================
-    df['_is_history_ride'] = (df['split_tag'] == 'history').astype(int) if 'split_tag' in df.columns else 1
+    # 🔴 FIX: 旧実装は (race_date, race_id) 順の累積だったため、学習時は「同日の
+    #          先行レースの結果」が特徴量に混入していた。本番の推論時点では同日の
+    #          結果は知り得ないため、学習と本番で分布がズレる（train/serving skew）。
+    #          さらに evaluate では target行の勝利(is_win)は加算されるのに騎乗数
+    #          (_is_history_ride=0)は加算されず、勝率が水増しされるバグがあった。
+    #          → 「その日より前（date-exclusive）」の累積に統一し、
+    #            出走カウントは _ride_flag（結果が確定した行のみ1）で数える。
+    #          これにより 学習・バックテスト・本番 の3経路が完全に同一条件になる。
+    if 'split_tag' in df.columns:
+        # history行(結果確定済み) または rankが数値の行(=バックテストのtarget行)は出走1件。
+        # 本番predictのtarget行(rank未確定=NaN)のみ0となる。
+        df['_ride_flag'] = ((df['split_tag'] == 'history') | df['rank'].notna()).astype(int)
+    else:
+        df['_ride_flag'] = 1
 
     for col, prefix in [('jockey_id', 'jockey'), ('trainer_id', 'trainer'), ('breeder', 'breeder')]:
         if col not in df.columns: continue
 
-        grp = df.groupby([col, 'race_date', 'race_id']).agg(
-            race_wins=('is_win', 'sum'),
-            race_top3=('is_top3', 'sum'),
-            race_rides=('_is_history_ride', 'sum')
+        grp = df.groupby([col, 'race_date']).agg(
+            d_wins=('is_win', 'sum'),
+            d_top3=('is_top3', 'sum'),
+            d_rides=('_ride_flag', 'sum')
         ).reset_index()
 
-        grp = grp.sort_values(['race_date', 'race_id'])
+        grp = grp.sort_values('race_date')
 
-        grp['cum_win'] = grp.groupby(col)['race_wins'].cumsum() - grp['race_wins']
-        grp['cum_top3'] = grp.groupby(col)['race_top3'].cumsum() - grp['race_top3']
-        grp['cum_rides'] = grp.groupby(col)['race_rides'].cumsum() - grp['race_rides']
+        # 当日分を差し引き、「その日より前」までの累積にする
+        grp['cum_win'] = grp.groupby(col)['d_wins'].cumsum() - grp['d_wins']
+        grp['cum_top3'] = grp.groupby(col)['d_top3'].cumsum() - grp['d_top3']
+        grp['cum_rides'] = grp.groupby(col)['d_rides'].cumsum() - grp['d_rides']
 
         grp[f'{prefix}_win_rate'] = (grp['cum_win'] / grp['cum_rides']).fillna(0.0)
         grp[f'{prefix}_top3_rate'] = (grp['cum_top3'] / grp['cum_rides']).fillna(0.0)
 
-        df = pd.merge(df, grp[[col, 'race_id', f'{prefix}_win_rate', f'{prefix}_top3_rate']], on=[col, 'race_id'],
-                      how='left')
+        df = pd.merge(df, grp[[col, 'race_date', f'{prefix}_win_rate', f'{prefix}_top3_rate']],
+                      on=[col, 'race_date'], how='left')
         df[f'{prefix}_win_rate'] = df[f'{prefix}_win_rate'].fillna(0.0)
         df[f'{prefix}_top3_rate'] = df[f'{prefix}_top3_rate'].fillna(0.0)
 
@@ -182,7 +235,7 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
         df['sire'] = 'unknown'
 
     # ========================================
-    # コース別累積成績
+    # コース別累積成績 (V8: 日付単位の排他集計に統一)
     # ========================================
     for col, feat in [('jockey_id', 'jockey_course_win'), ('trainer_id', 'trainer_course_win'),
                       ('sire', 'sire_course_win')]:
@@ -190,24 +243,24 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
             df[feat] = 0.0
             continue
 
-        grp2 = df.groupby([col, 'course', 'race_date', 'race_id']).agg(
-            course_wins=('is_win', 'sum'),
-            course_rides=('_is_history_ride', 'sum')
+        grp2 = df.groupby([col, 'course', 'race_date']).agg(
+            d_wins=('is_win', 'sum'),
+            d_rides=('_ride_flag', 'sum')
         ).reset_index()
 
-        grp2 = grp2.sort_values(['race_date', 'race_id'])
+        grp2 = grp2.sort_values('race_date')
 
-        grp2['cum_win'] = grp2.groupby([col, 'course'])['course_wins'].cumsum() - grp2['course_wins']
-        grp2['cum_rides'] = grp2.groupby([col, 'course'])['course_rides'].cumsum() - grp2['course_rides']
+        grp2['cum_win'] = grp2.groupby([col, 'course'])['d_wins'].cumsum() - grp2['d_wins']
+        grp2['cum_rides'] = grp2.groupby([col, 'course'])['d_rides'].cumsum() - grp2['d_rides']
 
         grp2[feat] = (grp2['cum_win'] / grp2['cum_rides']).fillna(0.0)
 
         df = df.drop(columns=[feat], errors='ignore')
-        df = pd.merge(df, grp2[[col, 'course', 'race_id', feat]], on=[col, 'course', 'race_id'], how='left')
+        df = pd.merge(df, grp2[[col, 'course', 'race_date', feat]], on=[col, 'course', 'race_date'], how='left')
         df[feat] = df[feat].fillna(0.0)
 
-    if '_is_history_ride' in df.columns:
-        df = df.drop(columns=['_is_history_ride'])
+    if '_ride_flag' in df.columns:
+        df = df.drop(columns=['_ride_flag'])
 
     # 数値列の欠損補完
     if 'weight' in df.columns:

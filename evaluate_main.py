@@ -106,13 +106,27 @@ def main():
 
     print("\n3️⃣ 特徴量エンジニアリング...")
     df_all = df_all.copy()
-    df_all['split_tag'] = np.where(df_all['race_id'].astype(str).isin(test_race_ids), 'target', 'history')
+
+    # 🔴 FIX: 出走取消・除外・競走中止等（rankが数値でない馬）は、本番の出馬表
+    #          （predict_main はキャンセル馬をスキップする）と条件を揃えるため
+    #          予測対象から外し、履歴(history)としてのみ扱う。
+    #          旧実装ではこれらの馬が fillna(0) で rank=0 となり、「rank<=3」の
+    #          判定で実際の3着以内と誤集計され、的中率が水増しされる余地があった。
+    _rank_num = pd.to_numeric(df_all['rank'], errors='coerce')
+    _is_test = df_all['race_id'].astype(str).isin(test_race_ids)
+    df_all['split_tag'] = np.where(_is_test & _rank_num.notna(), 'target', 'history')
+    n_excluded = int((_is_test & _rank_num.isna()).sum())
+    if n_excluded:
+        print(f"   -> ℹ️ 出走取消・中止等で着順が無い {n_excluded} 頭を予測対象から除外（履歴としては使用）")
+
     df_all = feature_engineering(df_all, weight_mean=weight_mean, burden_mean=burden_mean)
     df_all = df_all.sort_values(['race_date', 'race_id']).reset_index(drop=True)
+    # 🔴 FIX: rank は fillna(0) の対象から守る（0着=3着以内と誤判定されるのを防ぐ）
+    df_all['rank'] = pd.to_numeric(df_all['rank'], errors='coerce').fillna(99)
     df_all = df_all.fillna(0).replace([np.inf, -np.inf], 0)
 
     print("\n4️⃣ 過去成績履歴の隠蔽（カンニング防止）＆ DL推論...")
-    df_history_dl = df_all[df_all['split_tag'] == 'history'].copy()
+    df_history_dl = df_all.copy()
     df_targets_dl = df_all[df_all['split_tag'] == 'target'].copy()
 
     true_labels = df_targets_dl[['race_id', 'horse_id', 'rank']].copy()
@@ -148,17 +162,24 @@ def main():
     )
 
     print("\n6️⃣ 監督AI (Meta-Model) 一括予測...")
-    meta_cols = ['score_1st', 'score_2nd', 'gap', 'score_std', 'score_mean', 'head_count', 'transformer_prob_1st']
+    meta_cols = ['score_1st', 'score_2nd', 'score_3rd', 'gap_1_2', 'gap_3_4', 'score_std', 'score_mean', 'head_count',
+                 'transformer_prob_1st']
     df_test_final['rank'] = pd.to_numeric(df_test_final['rank'], errors='coerce').fillna(99).astype(int)
 
     meta_rows, race_rids = [], []
     for rid, grp in tqdm(df_test_final.groupby('race_id'), desc="Meta Prep"):
         grp = grp.sort_values('final_score', ascending=False)
         if len(grp) < 3: continue
-        top1, top2 = grp.iloc[0]['final_score'], grp.iloc[1]['final_score']
+        top1, top2, top3 = grp.iloc[0]['final_score'], grp.iloc[1]['final_score'], grp.iloc[2]['final_score']
+        top4 = grp.iloc[3]['final_score'] if len(grp) > 3 else 0.0
         meta_rows.append({
-            'score_1st': top1, 'score_2nd': top2, 'gap': top1 - top2,
-            'score_std': grp['final_score'].std() if len(grp) > 1 else 0.0, 'score_mean': grp['final_score'].mean(),
+            'score_1st': top1,
+            'score_2nd': top2,
+            'score_3rd': top3,
+            'gap_1_2': top1 - top2,
+            'gap_3_4': top3 - top4,
+            'score_std': grp['final_score'].std() if len(grp) > 1 else 0.0,
+            'score_mean': grp['final_score'].mean(),
             'head_count': len(grp), 'transformer_prob_1st': grp.iloc[0]['transformer_prob'],
         })
         race_rids.append(rid)
@@ -177,12 +198,13 @@ def main():
 
         grp = grp.sort_values('final_score', ascending=False)
         ai_top3 = grp.iloc[:3]['horse_id'].astype(str).values
-        actual_top3 = set(grp[grp['rank'] <= 3]['horse_id'].astype(str).values)
+        # 🔴 FIX: rank>=1 のガードを追加（欠損rankが0埋めされた場合の誤的中を根絶）
+        actual_top3 = set(grp[(grp['rank'] >= 1) & (grp['rank'] <= 3)]['horse_id'].astype(str).values)
 
         # 👑 【完全先祖返り】 3頭完全的中フラグ
         is_3puku_hit = 1 if (len(actual_top3) >= 3 and set(ai_top3).issubset(actual_top3)) else 0
 
-        valid_ranks = grp[grp['rank'] <= 3]
+        valid_ranks = grp[(grp['rank'] >= 1) & (grp['rank'] <= 3)]
         actual_order = valid_ranks.sort_values('rank')['horse_id'].astype(str).values
         is_3tan_hit = 1 if (len(actual_order) >= 3 and np.array_equal(actual_order[:3], ai_top3)) else 0
 
@@ -203,6 +225,7 @@ def main():
                     payouts['fukusho'] = flist[actual_rank - 1]
 
         race_results.append({
+            'race_date': grp['race_date'].iloc[0],
             'confidence': conf_dict[rid],
             'is_win': 1 if grp.iloc[0]['rank'] == 1 else 0,
             'is_place': 1 if grp.iloc[0]['rank'] <= 3 else 0,
@@ -250,6 +273,47 @@ def main():
         else:
             print(
                 f"{th:>3.0f}% 以上    | {bets:<5} | {wr:>6.1f}% | {pr:>6.1f}% | {p3r:>6.1f}% | {t3r:>6.1f}% | --- 払戻データなし ---")
+
+    # =========================================================================
+    # 🕒 月別ROI推移（モデルの鮮度劣化＝コンセプトドリフトの検証用）
+    # =========================================================================
+    print("\n" + "=" * 115)
+    print("🕒 [DRIFT CHECK] 月別ROI推移シミュレーション (学習データからの経過時間による性能劣化を確認)")
+    print("=" * 115)
+
+    df_res['race_month'] = pd.to_datetime(df_res['race_date']).dt.to_period('M')
+
+    # 検証したい自信度の閾値をここで指定（0%=全レース, 50%, 75%=バックテストの目玉ライン）
+    DRIFT_CHECK_THRESHOLDS = [0.0, 50.0, 75.0]
+
+    for th in DRIFT_CHECK_THRESHOLDS:
+        print(f"\n--- 自信度 {th:.0f}% 以上のみを対象 ---")
+        print(f"{'年月':<10} | {'購入R数':<5} | {'3複的中':<6} | {'3複回収':<8} | {'的中数':<6}")
+        print("-" * 60)
+
+        tgt_th = df_res[df_res['confidence'] >= th]
+        if tgt_th.empty:
+            print("   (該当レースなし)")
+            continue
+
+        for month, grp_m in tgt_th.groupby('race_month'):
+            bets_m = len(grp_m)
+            hits_m = int(grp_m['is_3puku_hit'].sum())
+            p3r_m = hits_m / bets_m * 100 if bets_m > 0 else 0.0
+
+            ret_m = grp_m[grp_m['has_return']]
+            ret_bets_m = len(ret_m)
+            if ret_bets_m > 0:
+                s3_ret_m = (ret_m['s3_payout'] * ret_m['is_3puku_hit']).sum() / (ret_bets_m * 100) * 100
+                note_m = f"(確定:{ret_bets_m}/{bets_m}R)" if ret_bets_m < bets_m else ""
+                print(f"{str(month):<10} | {bets_m:<5} | {p3r_m:>6.1f}% | {s3_ret_m:>8.1f}% | {hits_m:>6} {note_m}")
+            else:
+                print(f"{str(month):<10} | {bets_m:<5} | {p3r_m:>6.1f}% | --- 払戻データなし --- | {hits_m:>6}")
+
+    print("\n" + "-" * 115)
+    print("💡 見方: 学習データの最終月（DATA_DIR_VALの終端）から時間が経つほど3複回収率が")
+    print("   右肩下がりに劣化していく場合、モデルの鮮度劣化（コンセプトドリフト）が疑われます。")
+    print("   横ばい〜安定していれば、直近の性能悪化は主にサンプル数不足による分散が原因と考えられます。")
 
 
 if __name__ == "__main__":

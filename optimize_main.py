@@ -24,10 +24,10 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='lightgbm')
 
 DEVICE = torch.device(DEVICE_STR) if DEVICE_STR else torch.device("cpu")
 
-N_TRIALS_PHASE1 = 100
-N_TRIALS_PHASE2 = 100
-N_TRIALS_PHASE3 = 100
-N_TRIALS_PHASE4 = 100
+N_TRIALS_PHASE1 = 50
+N_TRIALS_PHASE2 = 50
+N_TRIALS_PHASE3 = 50
+N_TRIALS_PHASE4 = 50
 
 OPT_VAL_RATIO_PHASE1 = 0.20
 OPT_VAL_RATIO_PHASE3 = 0.15
@@ -36,7 +36,11 @@ OPTUNA_DB = f"sqlite:///{MODEL_BASE}/optuna_study.db"
 
 def make_target(rank):
     r = int(rank) if pd.notnull(rank) else 99
-    return 2 if r <= 3 else (1 if r == 4 else 0)
+    if r == 1: return 4
+    if r == 2: return 3
+    if r == 3: return 2
+    if r == 4: return 1
+    return 0
 
 
 # ==========================================
@@ -75,6 +79,16 @@ def main():
 
     print(f"\n1️⃣ ♻️ 同期されたOOF特徴量キャッシュをロード中... ({OOF_CACHE_FILE})")
     df_all = pd.read_pickle(OOF_CACHE_FILE)
+
+    # 🔴 FIX: 特徴量定義が変わった旧キャッシュ（V7以前）で最適化すると、本番と異なる
+    #          特徴量分布に対してパラメータが最適化されてしまう。バージョンを検証する。
+    EXPECTED_CACHE_VERSION = "v8_date_exclusive_aligned"
+    cache_ver = str(df_all['__cache_version__'].iloc[0]) if '__cache_version__' in df_all.columns else "unknown"
+    if cache_ver != EXPECTED_CACHE_VERSION:
+        raise ValueError(
+            f"❌ OOFキャッシュのバージョンが古いです (found: {cache_ver} / expected: {EXPECTED_CACHE_VERSION})。\n"
+            f"   先に 'python train_main.py' を再実行してキャッシュを再生成してください。"
+        )
 
     df_opt = df_all[df_all['has_oof']].copy().sort_values(['race_date', 'race_id']).reset_index(drop=True)
     print(f"\n2️⃣ 最適化データセットの構築 (レコード数: {len(df_opt)})")
@@ -116,21 +130,24 @@ def main():
 
     def objective_reward(trial):
         s4 = trial.suggest_int('score_4th', 1, 30)
-        s_top3 = trial.suggest_int('score_top3', 40, 200)
+        s3 = trial.suggest_int('score_3rd', 30, 80)
+        s2 = trial.suggest_int('score_2nd', 80, 150)
+        s1 = trial.suggest_int('score_1st', 150, 300)
 
         params = {
             'objective': 'lambdarank', 'metric': 'ndcg', 'ndcg_eval_at': [3], 'boosting_type': 'gbdt',
-            'learning_rate': 0.1, 'num_leaves': 31, 'label_gain': [0, s4, s_top3], 'verbose': -1, 'random_state': 42
+            'learning_rate': 0.1, 'num_leaves': 31, 'label_gain': [0, s4, s3, s2, s1], 'verbose': -1, 'random_state': 42
         }
         model = lgb.train(params, lgb.Dataset(X_p1_tr, y_p1_tr, group=q_p1_tr),
                           valid_sets=[lgb.Dataset(X_p1_vl, y_p1_vl, group=q_p1_vl)], num_boost_round=300,
                           callbacks=[lgb.early_stopping(30, verbose=False)])
         return fast_3top_cover_rate(model.predict(X_p1_vl), rids_p1_vl, ranks_p1_vl)
 
-    study_r = optuna.create_study(direction='maximize', study_name='phase1_reward_v7_3top', storage=OPTUNA_DB,
+    # 過去の3要素のDBと衝突しないよう study_name を _v2 に変更
+    study_r = optuna.create_study(direction='maximize', study_name='phase1_reward_v7_3top_v2', storage=OPTUNA_DB,
                                   load_if_exists=True)
     study_r.optimize(objective_reward, n_trials=N_TRIALS_PHASE1)
-    best_gain = [0, study_r.best_params['score_4th'], study_r.best_params['score_top3']]
+    best_gain = [0, study_r.best_params['score_4th'], study_r.best_params['score_3rd'], study_r.best_params['score_2nd'], study_r.best_params['score_1st']]
     print(f"   🏆 確定した最適ゲイン: {best_gain} (Best Cover Rate: {study_r.best_value * 100:.2f}%)")
 
     # =========================================================================
@@ -173,11 +190,13 @@ def main():
                          valid_sets=[lgb.Dataset(X_p3_vl, y_p3_vl, group=q_p3_vl)], num_boost_round=1000,
                          callbacks=[lgb.early_stopping(50, verbose=False)])
 
+    # 🔴 FIX: make_target が5値(0-4)になったため、3着以内(top3)の陽性ラベルは
+    #          旧: == 2 (3値時代は2=top3) → 新: >= 2 (5値では2=3着,3=2着,4=1着)
     model_clf_p3 = lgb.train(
         {'objective': 'binary', 'metric': 'auc', 'learning_rate': 0.05, 'num_leaves': 31, 'is_unbalance': True,
          'verbose': -1},
-        lgb.Dataset(X_p3_tr, (y_p3_tr == 2).astype(int)),
-        valid_sets=[lgb.Dataset(X_p3_vl, (y_p3_vl == 2).astype(int))], num_boost_round=500,
+        lgb.Dataset(X_p3_tr, (y_p3_tr >= 2).astype(int)),
+        valid_sets=[lgb.Dataset(X_p3_vl, (y_p3_vl >= 2).astype(int))], num_boost_round=500,
         callbacks=[lgb.early_stopping(30, verbose=False)])
 
     _rank_scores = model_p3.predict(X_p3_vl)
@@ -220,23 +239,31 @@ def main():
     for rid, grp in df_meta_p4.groupby('race_id', sort=False):
         if len(grp) < 3: continue
         grp = grp.sort_values('final_score', ascending=False)
-        top1, top2 = grp.iloc[0]['final_score'], grp.iloc[1]['final_score']
+        top1, top2, top3 = grp.iloc[0]['final_score'], grp.iloc[1]['final_score'], grp.iloc[2]['final_score']
+        top4 = grp.iloc[3]['final_score'] if len(grp) > 3 else 0.0
 
         # 👑 【完全先祖返り】 ターゲットの条件を「上位3頭の完全的中」に戻す
         target_val = 1 if np.all(grp.iloc[:3]['rank'].values <= 3) else 0
 
         meta_rows.append({
-            'race_date': grp.iloc[0]['race_date'], 'score_1st': top1, 'score_2nd': top2,
-            'gap': top1 - top2, 'score_std': grp['final_score'].std() if len(grp) > 1 else 0.0,
+            'race_date': grp.iloc[0]['race_date'],
+            'score_1st': top1,
+            'score_2nd': top2,
+            'score_3rd': top3,
+            'gap_1_2': top1 - top2,
+            'gap_3_4': top3 - top4,
+            'score_std': grp['final_score'].std() if len(grp) > 1 else 0.0,
             'score_mean': grp['final_score'].mean(),
-            'head_count': len(grp), 'transformer_prob_1st': grp.iloc[0]['transformer_prob'],
+            'head_count': len(grp),
+            'transformer_prob_1st': grp.iloc[0]['transformer_prob'],
             'target': target_val
         })
 
     df_meta_p4_agg = pd.DataFrame(meta_rows).sort_values('race_date').reset_index(drop=True)
 
     tscv_meta = TimeSeriesSplit(n_splits=TS_N_SPLITS, gap=META_GAP)
-    meta_cols = ['score_1st', 'score_2nd', 'gap', 'score_std', 'score_mean', 'head_count', 'transformer_prob_1st']
+    meta_cols = ['score_1st', 'score_2nd', 'score_3rd', 'gap_1_2', 'gap_3_4', 'score_std', 'score_mean', 'head_count',
+                 'transformer_prob_1st']
 
     def objective_meta(trial):
         meta_p = {

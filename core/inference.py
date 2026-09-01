@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from core.config import (
     MODEL_PATHS, CAT_COLS, NUM_COLS, HIST_COLS, HIST_LEN,
-    DAE_COLS, DAE_LEAKY_COLS, DAE_INPUT_DIM, DEVICE_STR
+    DAE_COLS, DAE_LEAKY_COLS, DAE_INPUT_DIM, DEVICE_STR, FEATURE_COLS
 )
 
 try:
@@ -27,8 +27,17 @@ except ImportError:
 
 
 def _local_safe_transform(mapping, labels):
-    """推論専用の安全なラベル変換"""
-    unknown_idx = mapping.get('unknown', len(mapping))
+    """推論専用の安全なラベル変換 (OOVインデックス越境防止版)
+
+    🔴 FIX: 'unknown'キーが存在しない場合のフォールバックを
+             len(mapping) → max(mapping.values()) に変更。
+             train_main.py で encoders[c]['unknown'] = len(le.classes_) と
+             明示的に設定しているため正常フローでは 'unknown' が必ず存在するが、
+             万一存在しない場合でも mapping 内の最大インデックスにクリップし
+             Embedding の index out of range を防ぐ。
+    """
+    max_valid_idx = max(mapping.values()) if mapping else 0
+    unknown_idx = mapping.get('unknown', max_valid_idx)
     return [mapping.get(str(x), unknown_idx) for x in labels]
 
 
@@ -49,6 +58,14 @@ def load_all_models(device=DEVICE):
     if proc.get('hist_dim') != len(HIST_COLS):
         raise ValueError("❌ Transformer の hist_dim が config と不一致です。")
 
+    # 🔴 FIX: NUM_COLS変更時（例: weight/weight_diff追加）に古いモデルを誤ってロードすると
+    #          load_state_dict で不明瞭な RuntimeError になる。ここで明示的にチェックする。
+    if proc.get('num_dim') != len(NUM_COLS):
+        raise ValueError(
+            f"❌ Transformer の num_dim（保存値: {proc.get('num_dim')}）が"
+            f" config と不一致（現在: {len(NUM_COLS)}）です。再学習が必要です。"
+        )
+
     trans = RacingTransformer(proc['cat_dims'], proc['num_dim'], proc['hist_dim'], seq_len=HIST_LEN).to(device)
     trans.load_state_dict(torch.load(MODEL_PATHS['transformer'], map_location=device, weights_only=True))
     trans.eval()
@@ -61,10 +78,27 @@ def load_all_models(device=DEVICE):
     dae.load_state_dict(torch.load(MODEL_PATHS['dae_model'], map_location=device, weights_only=True))
     dae.eval()
 
+    ranker = lgb.Booster(model_file=MODEL_PATHS['lgb_ranker'])
+    clf = lgb.Booster(model_file=MODEL_PATHS['lgb_prob'])
+
+    # 🔴 FIX: FEATURE_COLS変更時（列の追加/削除）に古いLightGBMモデルを誤ってロードすると
+    #          特徴量数の不一致で分かりにくいエラー、または列数が偶然一致した場合は
+    #          無言で誤った予測をしてしまう。Transformer/DAEと同様に明示的にチェックする。
+    if ranker.num_feature() != len(FEATURE_COLS):
+        raise ValueError(
+            f"❌ lgb_ranker の特徴量数（保存値: {ranker.num_feature()}）が"
+            f" FEATURE_COLS（現在: {len(FEATURE_COLS)}）と不一致です。再学習が必要です。"
+        )
+    if clf.num_feature() != len(FEATURE_COLS):
+        raise ValueError(
+            f"❌ lgb_prob の特徴量数（保存値: {clf.num_feature()}）が"
+            f" FEATURE_COLS（現在: {len(FEATURE_COLS)}）と不一致です。再学習が必要です。"
+        )
+
     models = {
         'proc': proc, 'trans': trans, 'dae_scaler': dae_scaler, 'dae': dae,
-        'ranker': lgb.Booster(model_file=MODEL_PATHS['lgb_ranker']),
-        'clf': lgb.Booster(model_file=MODEL_PATHS['lgb_prob'])
+        'ranker': ranker,
+        'clf': clf
     }
 
     if os.path.exists(MODEL_PATHS.get('meta_model', '')):
@@ -95,7 +129,6 @@ def build_hist_tensor(df, hist_scaler, hist_len=HIST_LEN, df_history=None):
     df_h['race_date'] = pd.to_datetime(df_h['race_date'])
     df_h = df_h.sort_values(['horse_id', 'race_date', 'race_id'])
 
-    # 🔥 FIX: 過去データスケーリング直後の inf / nan を完全に駆逐
     raw_hist_values = np.nan_to_num(df_h[HIST_COLS].fillna(0).values.astype(np.float32))
     scaled_hist = hist_scaler.transform(raw_hist_values)
     df_h[HIST_COLS] = np.nan_to_num(scaled_hist, nan=0.0, posinf=0.0, neginf=0.0)
@@ -134,7 +167,6 @@ def generate_dl_features(df, models, df_history=None, device=DEVICE, batch_size=
         for c in CAT_COLS
     ], axis=1), dtype=torch.long)
 
-    # 🔥 FIX: 数値特徴量の変換時、ゼロ除算等で発生する inf も確実に 0 に潰す
     scaled_values = proc['num_scaler'].transform(df[NUM_COLS].values.astype(np.float32))
     x_n = torch.tensor(
         np.nan_to_num(scaled_values, nan=0.0, posinf=0.0, neginf=0.0),
@@ -156,7 +188,6 @@ def generate_dl_features(df, models, df_history=None, device=DEVICE, batch_size=
             ).squeeze(-1)
             probs.append(torch.sigmoid(out).cpu().numpy().reshape(-1))
 
-    # 🔥 FIX: Transformerモデル自体の重みが壊れてNaNを返した場合の防衛線
     transformer_preds = np.concatenate(probs)
     if np.isnan(transformer_preds).any():
         transformer_preds = np.nan_to_num(transformer_preds, nan=0.5)
@@ -166,7 +197,6 @@ def generate_dl_features(df, models, df_history=None, device=DEVICE, batch_size=
     df_dae = df[DAE_COLS].copy()
     df_dae[DAE_LEAKY_COLS] = 0
 
-    # 🔥 FIX: DAEへの入力値の inf / nan も同様に完全ガード
     scaled_dae = models['dae_scaler'].transform(np.nan_to_num(df_dae.values.astype(np.float32)))
     inp = np.nan_to_num(scaled_dae, nan=0.0, posinf=0.0, neginf=0.0)
 

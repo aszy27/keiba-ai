@@ -102,7 +102,7 @@ def main():
     print("🕸️ 家系図ネットワークを構築中...")
     G = nx.Graph()
 
-    INVALID_IDS = ['nan', 'unknown', '', '0', 'none']
+    INVALID_IDS = ['nan', 'unknown', '', '0', 'none', 'no_id', 'no_ped']
 
     def get_valid_edges(source_col, target_col):
         if target_col not in df.columns or source_col not in df.columns:

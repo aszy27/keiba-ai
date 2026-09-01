@@ -46,12 +46,19 @@ def seed_everything(seed=42):
 
 
 def build_hist_array(df_hist_scaled, hist_len=HIST_LEN):
-    hist_feats = np.zeros((len(df_hist_scaled), hist_len, len(HIST_COLS)), dtype=np.float32)
-    grouped_indices = df_hist_scaled.groupby('horse_id').groups
-    scaled_values = df_hist_scaled[HIST_COLS].values
+    # 🔴 FIX: horse_id+race_date+race_idでソートしてから処理することで
+    #          df結合順に依存せず常に時系列順を保証する。
+    #          元のDataFrameインデックスとの対応は orig_idx 列で維持する。
+    df_work = df_hist_scaled.copy()
+    df_work['_orig_idx'] = np.arange(len(df_work))
+    df_work = df_work.sort_values(['horse_id', 'race_date', 'race_id']).reset_index(drop=True)
+
+    hist_feats = np.zeros((len(df_work), hist_len, len(HIST_COLS)), dtype=np.float32)
+    grouped_indices = df_work.groupby('horse_id', sort=False).groups
+    scaled_values = df_work[HIST_COLS].values
 
     for horse_id, indices in grouped_indices.items():
-        idx_list = list(indices)
+        idx_list = list(indices)  # ソート済みなので時系列順
         for i, idx in enumerate(idx_list):
             start_i = max(0, i - hist_len)
             past_indices = idx_list[start_i:i]
@@ -59,12 +66,21 @@ def build_hist_array(df_hist_scaled, hist_len=HIST_LEN):
                 seq_length = len(past_indices)
                 start_idx = hist_len - seq_length
                 hist_feats[idx, start_idx:, :] = scaled_values[past_indices]
-    return hist_feats
+
+    # ソート前の元インデックス順に並び替えて返す
+    restore_order = df_work['_orig_idx'].values
+    result = np.empty_like(hist_feats)
+    result[restore_order] = hist_feats
+    return result
 
 
 def make_target(x):
-    r = int(x)
-    return 2 if r <= 3 else (1 if r == 4 else 0)
+    r = int(x) if pd.notnull(x) else 99
+    if r == 1: return 4
+    if r == 2: return 3
+    if r == 3: return 2
+    if r == 4: return 1
+    return 0
 
 
 def _load_gm_weights(model_base):
@@ -149,6 +165,8 @@ def main():
 
         df_hist_comb = pd.DataFrame(np.vstack([hist_tr, hist_va]), columns=HIST_COLS)
         df_hist_comb['horse_id'] = np.concatenate([df_train['horse_id'].values, df_val['horse_id'].values])
+        df_hist_comb['race_date'] = np.concatenate([df_train['race_date'].values, df_val['race_date'].values])
+        df_hist_comb['race_id'] = np.concatenate([df_train['race_id'].values, df_val['race_id'].values])
 
         X_hist_comb = build_hist_array(df_hist_comb, HIST_LEN)
         X_hist_tr, X_hist_va = X_hist_comb[:len(df_train)], X_hist_comb[len(df_train):]
@@ -263,7 +281,9 @@ def main():
     df_all['lgb_rank_score'] = lgb_rank_oof
     df_all['lgb_prob_score'] = lgb_prob_oof
     df_all['has_oof'] = oof_received
-    df_all['__cache_version__'] = "v7_fully_aligned_ sniper_production"
+    # 🔴 特徴量定義の変更（V8: 日付排他の累積成績・rank/grade/condition正規化）に伴い
+    #    バージョンを更新。optimize_main.py は必ずこのキャッシュ再生成後に実行すること。
+    df_all['__cache_version__'] = "v8_date_exclusive_aligned"
     df_all.to_pickle(OOF_CACHE_FILE)
     print(f"   -> 💾 堅牢なOOFキャッシュを保存しました。")
 
@@ -289,14 +309,16 @@ def main():
     }
     meta_params.setdefault('is_unbalance', True)
 
-    meta_cols = ['score_1st', 'score_2nd', 'gap', 'score_std', 'score_mean', 'head_count', 'transformer_prob_1st']
+    meta_cols = ['score_1st', 'score_2nd', 'score_3rd', 'gap_1_2', 'gap_3_4', 'score_std', 'score_mean', 'head_count',
+                 'transformer_prob_1st']
     race_meta_data = []
 
     for rid, grp in df_meta_src.groupby('race_id'):
         grp = grp.sort_values('final_score', ascending=False)
         if len(grp) < 3: continue
 
-        top1, top2 = grp.iloc[0], grp.iloc[1]
+        top1, top2, top3 = grp.iloc[0], grp.iloc[1], grp.iloc[2]
+        top4_score = grp.iloc[3]['final_score'] if len(grp) > 3 else 0.0
 
         # 👑 【完全先祖返り】 ターゲットの定義を「上位3頭の完全的中」に戻す
         ai_top3_set = set(grp.iloc[:3]['horse_id'].astype(str).values)
@@ -307,7 +329,9 @@ def main():
             'race_date': grp['race_date'].iloc[0],
             'score_1st': top1['final_score'],
             'score_2nd': top2['final_score'],
-            'gap': top1['final_score'] - top2['final_score'],
+            'score_3rd': top3['final_score'],
+            'gap_1_2': top1['final_score'] - top2['final_score'],
+            'gap_3_4': top3['final_score'] - top4_score,
             'score_std': grp['final_score'].std() if len(grp) > 1 else 0.0,
             'score_mean': grp['final_score'].mean(),
             'head_count': len(grp),
@@ -371,6 +395,8 @@ def main():
 
     df_hist_f = pd.DataFrame(h_sc_f.fit_transform(df_trans_final[HIST_COLS].values), columns=HIST_COLS)
     df_hist_f['horse_id'] = df_trans_final['horse_id'].values
+    df_hist_f['race_date'] = df_trans_final['race_date'].values
+    df_hist_f['race_id'] = df_trans_final['race_id'].values
 
     trans_final = RacingTransformer(cat_dims_f, len(NUM_COLS), len(HIST_COLS), seq_len=HIST_LEN).to(DEVICE)
     tfin_opt = torch.optim.AdamW(trans_final.parameters(), lr=1e-3, weight_decay=1e-4)

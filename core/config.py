@@ -67,7 +67,7 @@ assert VEC_DIM == 64, f"VEC_DIM={VEC_DIM} が train_graph_embedding.py の設定
 
 FEATURE_COLS = (
     [
-        'bracket', 'horse_number', 'age', 'burden', 'head_count',
+        'bracket', 'horse_number', 'age', 'burden', 'weight', 'weight_diff', 'head_count',  # 🌟 2つを追加
         'run_count', 'interval', 'prev_is_win', 'jockey_change', 'avg_rank_5',
         'prev_rank_1', 'prev_rank_2', 'prev_rank_3', 'prev_rank_4', 'prev_rank_5',
         'prev_diff_1', 'prev_diff_2', 'prev_diff_3', 'prev_diff_4', 'prev_diff_5',
@@ -75,10 +75,10 @@ FEATURE_COLS = (
         'is_nige', 'prev_pos_1',
         'jockey_win_rate', 'jockey_top3_rate', 'trainer_win_rate', 'trainer_top3_rate',
         'breeder_win_rate', 'breeder_top3_rate',
-        'oikiri_score', 'oikiri_missing',  # ★ oikiri_last1f 特徴量を排除
+        'oikiri_score', 'oikiri_missing',
         'prev_pace_1', 'prev_first_3f_1', 'prev_last_3f_race_1',
         'jockey_course_win', 'trainer_course_win', 'sire_course_win',
-        'transformer_prob', 'race_senkou_count', 'race_senkou_ratio',
+        'race_senkou_count', 'race_senkou_ratio',
         'straight', 'elevation', 'has_slope', 'grade_score'
     ]
     + [f'dae_{i}' for i in range(32)]
@@ -86,7 +86,7 @@ FEATURE_COLS = (
 )
 
 CAT_COLS  = ['place', 'type', 'weather', 'condition', 'horse_id', 'jockey_id', 'grade', 'breeder']
-NUM_COLS  = ['burden', 'length', 'horse_number', 'oikiri_score', 'straight', 'elevation', 'has_slope'] # ★ oikiri_last1f を排除
+NUM_COLS  = ['burden', 'weight', 'weight_diff', 'length', 'horse_number', 'oikiri_score', 'straight', 'elevation', 'has_slope'] # 🌟 ここにも2つを追加
 HIST_COLS = ['rank', 'last_3f', 'diff_time', 'popularity', 'grade_score', 'prize', 'pace_score', 'first_3f', 'last_3f_race']
 
 DAE_COLS       = ['rank', 'bracket', 'horse_number', 'age', 'burden', 'prize', 'last_3f', 'interval']
@@ -97,7 +97,7 @@ HIST_LEN       = 5
 # =========================================================================
 # LightGBM ハイパーパラメータ定義とロード (3連複 Sniper 最適化版)
 # =========================================================================
-DEFAULT_LABEL_GAIN = [0, 10, 100]
+DEFAULT_LABEL_GAIN = [0, 10, 30, 100, 200]
 
 RANKER_PARAMS = {
     'objective': 'lambdarank', 'metric': 'ndcg', 'ndcg_eval_at': [3],
@@ -113,7 +113,8 @@ if os.path.exists(PARAM_FILE_RANKER):
             p = json.load(f)
         if p.get('objective') == 'lambdarank':
             RANKER_PARAMS.update(p)
-            if not RANKER_PARAMS.get('label_gain') or len(RANKER_PARAMS['label_gain']) != 3:
+            # 🌟 古い3要素のパラメータを検知し、5要素に自動上書きするため「!= 5」に変更
+            if not RANKER_PARAMS.get('label_gain') or len(RANKER_PARAMS['label_gain']) != 5:
                 RANKER_PARAMS['label_gain'] = DEFAULT_LABEL_GAIN
     except Exception:
         pass
