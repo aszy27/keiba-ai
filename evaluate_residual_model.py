@@ -27,6 +27,9 @@ SPLITS = {
     # 2026-09-15 に事前登録した2回目の最終テスト（CLAUDE.md 参照）。対象期間が MIN_FINAL2_RACES に達するまで評価しない
     'final2': {'train': ("2024-01-01", "2026-03-01"), 'valid': ("2026-03-01", FINAL2_START),
                'test': (FINAL2_START, "2100-01-01")},
+    # 2026-09-15 に事前登録した3回目の最終テスト。オッズを一度も見ていない2021〜2023年を使う（CLAUDE.md 参照）
+    'final3': {'train': ("2021-01-01", "2022-07-01"), 'valid': ("2022-07-01", "2023-01-01"),
+               'test': ("2023-01-01", "2024-01-01")},
 }
 FEATURE_SETS = {
     '既存特徴量': BASE_FEATURES,
@@ -59,8 +62,11 @@ def load():
     r = pd.read_csv(FILE_RETURN, dtype=str).drop_duplicates('race_id', keep='last')
     r['tansho'] = pd.to_numeric(r['tansho'].str.split('|').str[0], errors='coerce')
     w = df[df['rank'] == 1].merge(r[['race_id', 'tansho']], on='race_id', how='left')
-    pay_ok = set(w.loc[(w['win_odds'] * 100).round() == w['tansho'], 'race_id'])
-    df['bad'] = ~(df['win_odds'] > 0) | ~(df['place_min'] > 0) | ~df['race_id'].isin(pay_ok)
+    # 2023年以前は払戻データが一部のレースにしかないため、払戻があるレースだけ照合する
+    checked = w['tansho'].notna()
+    pay_ng = set(w.loc[checked & ((w['win_odds'] * 100).round() != w['tansho']), 'race_id'])
+    print(f"単勝払戻との照合: {w.loc[checked, 'race_id'].nunique()}R で実施 / 不一致 {len(pay_ng)}R（同着を含む）")
+    df['bad'] = ~(df['win_odds'] > 0) | ~(df['place_min'] > 0) | df['race_id'].isin(pay_ng)
     g = df.groupby('race_id')
     ok = ~g['bad'].transform('any') & (g['rank'].transform(lambda s: (s == 1).sum()) == 1)
     n_all = df['race_id'].nunique()
@@ -125,7 +131,7 @@ def main():
     ap.add_argument('--split', default='dev', choices=list(SPLITS))
     ap.add_argument('--sets', default=','.join(FEATURE_SETS), help="評価する特徴量セット（カンマ区切り）")
     args = ap.parse_args()
-    if args.split in ('final', 'final2'):
+    if args.split in ('final', 'final2', 'final3'):
         print("*** 最終テスト期間を評価します。この結果を見て特徴量や設定を変えないこと ***")
 
     df = load()

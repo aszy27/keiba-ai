@@ -8,7 +8,7 @@ from core.data_loader import load_and_merge_all_data
 from core.features import feature_engineering
 
 OUT_FILE = str(DATA_DIR / "edge_dataset.pkl")
-START = "2024-01-01"
+START = "2021-01-01"
 BASE_FEATURES = [c for c in FEATURE_COLS if not c.startswith('dae_')]
 BIAS_FEATURES = ['day_n', 'day_num_dev', 'day_pos_dev', 'horse_rel_num', 'horse_style', 'inner_x', 'front_x']
 CHANGE_FEATURES = ['dist_change', 'surface_change', 'place_change', 'burden_change',
