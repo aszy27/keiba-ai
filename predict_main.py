@@ -8,7 +8,7 @@ import os
 import warnings
 import time
 
-from core.config import FEATURE_COLS, DATA_DIRS, DATA_DIRS_ALL, PREDICT_DIR
+from core.config import FEATURE_COLS, DATA_DIRS, DATA_DIRS_ALL, PREDICT_DIR, PEDIGREE_FILE
 from core.features import feature_engineering
 from core.inference import load_all_models, generate_dl_features
 from core.data_loader import load_and_merge_all_data, extract_grade_from_name, FILE_BREEDER
@@ -20,9 +20,18 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='lightgbm')
 # ★設定: 予測したいレースID（12桁）を指定
 # ==========================================
 TARGET_IDS = [
-    "2026040206",
-    "2026070206",
-    "2026010106"
+    "2026040303",
+    "2026070303",
+    "2026010203",
+    "2026040304",
+    "2026070304",
+    "2026010204",
+    "2026060401",
+    "2026090401",
+    "2026010205",
+    "2026060402",
+    "2026090402",
+    "2026010206"
 ]
 
 # ==========================================
@@ -279,6 +288,105 @@ def bet_decision_mark(c, threshold=BET_THRESHOLD):
     return f"⚠️ 見送り推奨 (閾値{threshold:.0f}%未満)"
 
 
+def check_data_freshness(df_hist_all: pd.DataFrame, df_targets: pd.DataFrame) -> None:
+    """
+    🔴 追加: 予測前のデータ鮮度チェック（学習・バックテストと条件がズレる原因を事前に警告）
+      ・前週までのレース結果が data/test に入っているか（入っていないと前走・騎手成績が古いまま）
+      ・出走馬が血統マスタ／生産者マスタに登録済みか（未登録だと血統ベクトル・種牡馬・生産者が不明扱い）
+      ・直近のレースデータに芝ダ・距離・天候・馬場の欠損がないか（スクレイプ失敗）
+      ・馬体重・追い切りが発表済みか
+    """
+    print("\n🩺 データ鮮度チェック...")
+    issues = []
+    first_date = pd.to_datetime(df_targets['race_date']).min()
+
+    if not df_hist_all.empty:
+        hist_before = df_hist_all[df_hist_all['race_date'] < first_date]
+        if not hist_before.empty:
+            last_date = hist_before['race_date'].max()
+            gap = (first_date - last_date).days
+            if gap > 9:
+                issues.append(f"レース結果が {last_date.date()} までしかありません（予測日の{gap}日前）。"
+                              f"scrape/scrape_main_data.py で前週までの結果を取得してから実行してください。")
+
+            recent = hist_before[hist_before['race_date'] >= first_date - pd.Timedelta(days=60)]
+            if not recent.empty and 'type' in recent.columns and 'length' in recent.columns:
+                bad = recent.groupby('race_id').agg(
+                    t=('type', lambda x: x.isna().all()),
+                    l=('length', lambda x: pd.to_numeric(x, errors='coerce').isna().all()))
+                n_bad = int((bad['t'] | bad['l']).sum())
+                if n_bad:
+                    issues.append(f"直近60日のレースのうち {n_bad}R で芝ダ・距離などが欠損しています。"
+                                  f"repair_race_info.py で修復してください。")
+
+    tgt_horses = df_targets['horse_id'].astype(str).unique()
+    if os.path.exists(PEDIGREE_FILE):
+        try:
+            ped_ids = set(pd.read_csv(PEDIGREE_FILE, dtype=str, usecols=['horse_id'])['horse_id'].astype(str))
+            miss = [h for h in tgt_horses if h not in ped_ids]
+            if miss:
+                issues.append(f"出走馬 {len(miss)}/{len(tgt_horses)} 頭が血統マスタに未登録です（種牡馬・血統ベクトルが不明扱い）。"
+                              f"scrape/scrape_horse_ped.py を先に実行してください。")
+        except Exception as e:
+            print(f"   ⚠️ 血統マスタ確認失敗: {e}")
+
+    if 'breeder' in df_targets.columns:
+        n_nb = int(df_targets.drop_duplicates('horse_id')['breeder'].isna().sum())
+        if n_nb:
+            issues.append(f"出走馬 {n_nb} 頭の生産者が未登録です。scrape/scrape_other_data.py を先に実行してください。")
+
+    w_missing = pd.to_numeric(df_targets['weight'], errors='coerce').isna().mean()
+    if w_missing > 0.5:
+        issues.append(f"馬体重が {w_missing:.0%} の馬で未発表です（学習時は全馬に実測値あり）。発表後の再実行を推奨します。")
+
+    oik_missing = df_targets.groupby('race_id')['oikiri_rank'].apply(lambda x: x.isna().all())
+    if oik_missing.any():
+        issues.append(f"{int(oik_missing.sum())}R で追い切り評価が取得できていません（未公開の可能性）。")
+
+    if issues:
+        print("   " + "-" * 90)
+        for msg in issues:
+            print(f"   ⚠️ {msg}")
+        print("   " + "-" * 90)
+        print("   ※ 上記は学習・バックテストと条件がズレる原因になります。解消してからの再実行を推奨します。")
+    else:
+        print("   ✅ 問題なし")
+
+
+def predict_one_date(df_hist_all: pd.DataFrame, df_tgt: pd.DataFrame, target_date: pd.Timestamp,
+                     models: dict, gm_params: dict) -> pd.DataFrame:
+    """
+    🔴 FIX: 予測対象日ごとに「その日より前」の確定データだけを履歴として特徴量を作る。
+      旧実装は全対象レースを一括処理していたため、TARGET_IDS に複数週を入れると
+      前週の対象レース（着順なし）が翌週の馬の前走として扱われ、prev_rank_1=0（デビュー扱い）
+      などになっていた。日付ごとに処理することで evaluate_main（バックテスト）と同一条件になる。
+    """
+    target_rids = set(df_tgt['race_id'].astype(str))
+    if df_hist_all.empty:
+        df_hist = pd.DataFrame()
+    else:
+        df_hist = df_hist_all[
+            (df_hist_all['race_date'] < target_date) &
+            (~df_hist_all['race_id'].astype(str).isin(target_rids))
+        ].copy()
+        df_hist['split_tag'] = "history"
+
+    for c in ['prize', 'popularity', 'rank', 'last_3f', 'diff_time']:
+        val = 0 if c != 'rank' else np.nan
+        if not df_hist.empty and c not in df_hist.columns: df_hist[c] = val
+        if c not in df_tgt.columns: df_tgt[c] = val
+
+    df_combined = pd.concat([df_hist, df_tgt], ignore_index=True) if not df_hist.empty else df_tgt.copy()
+
+    df_combined = feature_engineering(df_combined, weight_mean=gm_params.get('weight_mean', 470.0),
+                                      burden_mean=gm_params.get('burden_mean', 55.0))
+    df_combined = df_combined.fillna(0).replace([np.inf, -np.inf], 0)
+
+    df_hist_fe = df_combined[df_combined['split_tag'] == 'history']
+    df_pred = df_combined[df_combined['split_tag'] == 'target'].copy()
+    return generate_dl_features(df_pred, models, df_history=df_hist_fe, show_progress=True)
+
+
 if __name__ == "__main__":
     if not TARGET_IDS:
         print("⚠️ TARGET_IDS を設定してください")
@@ -300,23 +408,13 @@ if __name__ == "__main__":
 
     print("📚 過去データをロード中...")
 
-    # ⚠️ 修正: inference.py の d_hist < d_target によって未来リークは既に防がれているため、
-    # 最新のテスト期間(2025〜)も含めた全データを読み込み、本日のレースだけを除外する。
-    df_past = load_and_merge_all_data(DATA_DIRS_ALL)
-    today = pd.Timestamp('today').normalize()
-    if df_past is not None and not df_past.empty:
-        df_past['race_date'] = pd.to_datetime(df_past['race_date'])
-        # 🔴 FIX: 予測対象レース自体が過去データ(data/test等)に確定結果として存在する場合
-        #          （過去レースの再予測時）、同一レースが履歴とtargetに二重計上され
-        #          head_count 等のレース内特徴量が破壊されるため、必ず除外する。
-        target_rid_set = {rid for rid, _ in race_list}
-        df_past = df_past[
-            (df_past['race_date'] < today) &
-            (~df_past['race_id'].astype(str).isin(target_rid_set))
-        ].copy()
-        df_past['split_tag'] = "history"
+    # 🔴 FIX: 履歴の絞り込み（予測対象日より前）は predict_one_date で対象日ごとに行う
+    df_hist_all = load_and_merge_all_data(DATA_DIRS_ALL)
+    if df_hist_all is not None and not df_hist_all.empty:
+        df_hist_all['race_date'] = pd.to_datetime(df_hist_all['race_date'])
+        df_hist_all['split_tag'] = "history"
     else:
-        df_past = pd.DataFrame()
+        df_hist_all = pd.DataFrame()
 
     print("\n📋 全レースの出馬表をスクレイプ中...")
     scraped_frames = []
@@ -346,22 +444,17 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"   ⚠️ Breederデータ結合失敗: {e}")
 
-    for c in ['prize', 'popularity', 'rank', 'last_3f', 'diff_time']:
-        val = 0 if c != 'rank' else np.nan
-        if not df_past.empty and c not in df_past.columns: df_past[c] = val
-        if c not in df_targets.columns: df_targets[c] = val
+    check_data_freshness(df_hist_all, df_targets)
 
-    df_combined = pd.concat([df_past, df_targets], ignore_index=True) if not df_past.empty else df_targets.copy()
-
-    print("\n🛠️ 特徴量生成・推論 (全レース一括処理)...")
-    df_combined = feature_engineering(df_combined, weight_mean=gm_params.get('weight_mean', 470.0),
-                                      burden_mean=gm_params.get('burden_mean', 55.0))
-    df_combined = df_combined.fillna(0).replace([np.inf, -np.inf], 0)
-
-    df_hist = df_combined[df_combined['split_tag'] == 'history'].copy()
-    df_pred = df_combined[df_combined['split_tag'] == 'target'].copy()
-
-    df_pred = generate_dl_features(df_pred, models, df_history=df_hist, show_progress=True)
+    df_targets['race_date'] = pd.to_datetime(df_targets['race_date'])
+    target_dates = sorted(df_targets['race_date'].unique())
+    pred_frames = []
+    for d in target_dates:
+        d = pd.Timestamp(d)
+        df_tgt_d = df_targets[df_targets['race_date'] == d].copy()
+        print(f"\n🛠️ 特徴量生成・推論: {d.date()} ({df_tgt_d['race_id'].nunique()}R / 履歴は{d.date()}より前のみ)...")
+        pred_frames.append(predict_one_date(df_hist_all, df_tgt_d, d, models, gm_params))
+    df_pred = pd.concat(pred_frames, ignore_index=True)
 
     for feat in FEATURE_COLS:
         if feat not in df_pred.columns: df_pred[feat] = 0

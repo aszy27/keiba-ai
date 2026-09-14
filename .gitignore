@@ -34,6 +34,8 @@ models/*.txt
 models/*.pth
 models/*.pkl
 models/*.db
+models.bak_*/
+*.bak_*
 
 # ==========================================
 # 予測・評価の出力フォルダ

@@ -18,6 +18,47 @@ OIKIRI_MAP = {'S': 5, 'A': 4, 'B': 3, 'C': 2, 'D': 1}
 PACE_MAP = {'H': 3, 'M': 2, 'S': 1}
 
 
+def _fill_missing_pedigree_vectors(df, vec_cols):
+    """血統ベクトルが欠損している馬を、両親（sire_id / dam_id）のベクトル平均で補完する"""
+    missing = df[vec_cols[0]].isna()
+    if not missing.any() or not os.path.exists(PEDIGREE_FILE) or not os.path.exists(HORSE_VECTOR_FILE):
+        return df
+    try:
+        ped = pd.read_csv(PEDIGREE_FILE, dtype=str, usecols=['horse_id', 'sire_id', 'dam_id'])
+        for c in ['horse_id', 'sire_id', 'dam_id']:
+            ped[c] = ped[c].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+        ped = ped.drop_duplicates(subset=['horse_id'], keep='last')
+        target_ids = df.loc[missing, 'horse_id'].astype(str).unique()
+        ped = ped[ped['horse_id'].isin(target_ids)]
+        if ped.empty:
+            return df
+
+        bv = pd.read_csv(HORSE_VECTOR_FILE, dtype={'horse_id': str})
+        bv['horse_id'] = bv['horse_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+        bv = bv.drop_duplicates(subset=['horse_id']).set_index('horse_id')[vec_cols]
+
+        sire_vec = bv.reindex(ped['sire_id'].values).values
+        dam_vec = bv.reindex(ped['dam_id'].values).values
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)  # 両親とも欠損の行は NaN のまま
+            parent_mean = np.nanmean(np.stack([sire_vec, dam_vec]), axis=0)
+
+        fill = pd.DataFrame(parent_mean, columns=vec_cols, index=ped['horse_id'].values)
+        fill = fill.dropna(subset=[vec_cols[0]])
+        if fill.empty:
+            return df
+
+        rows = df.index[missing & df['horse_id'].astype(str).isin(fill.index)]
+        df.loc[rows, vec_cols] = fill.loc[df.loc[rows, 'horse_id'].astype(str), vec_cols].values
+        n_all = df.loc[missing, 'horse_id'].nunique()
+        n_filled = df.loc[rows, 'horse_id'].nunique()
+        print(f"   -> 🧬 血統ベクトル未登録 {n_all}頭中 {n_filled}頭を両親ベクトルの平均で補完"
+              f"（残り{n_all - n_filled}頭は0埋め）")
+    except Exception as e:
+        print(f"   ⚠️ 血統ベクトル補完失敗（0埋めで続行）: {e}")
+    return df
+
+
 def feature_engineering(df, weight_mean: float = None, burden_mean: float = None):
     """
     特徴量エンジニアリング (V8 学習/バックテスト/本番 完全整合版)
@@ -70,7 +111,17 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
     # ID列のクレンジング
     for id_col in ['horse_id', 'jockey_id', 'trainer_id']:
         if id_col in df.columns:
-            df[id_col] = df[id_col].fillna('unknown').astype(str).str.replace(r'\.0$', '', regex=True)
+            df[id_col] = df[id_col].fillna('unknown').astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+
+    # 🔴 FIX: 騎手・調教師IDの書式を5桁ゼロ埋めに統一する。
+    #          keibascraper由来の race_data は 2014〜2025年が「1170」、2012〜2013年と
+    #          2026年が「01170」と年によって書式が異なり、本番の出馬表(predict_main)は
+    #          「01170」を出す。そのため同じ騎手が別人扱いになり、2026年以降の騎手・調教師の
+    #          累積成績が2026年分(+2012〜13年分)だけで計算され、乗り替わり判定も誤っていた。
+    for id_col in ['jockey_id', 'trainer_id']:
+        if id_col in df.columns:
+            _is_num = df[id_col].str.fullmatch(r'\d+')
+            df.loc[_is_num, id_col] = df.loc[_is_num, id_col].str.zfill(5)
 
     df['head_count'] = df.groupby('race_id')['horse_id'].transform('count') if 'race_id' in df.columns else 1
 
@@ -180,6 +231,14 @@ def feature_engineering(df, weight_mean: float = None, burden_mean: float = None
     for col in vec_cols:
         if col not in df.columns:
             df[col] = 0.0
+
+    # 🔴 FIX: horse_vectors.csv 作成後にデビューした馬（新馬など）は血統ベクトルが無く、
+    #          学習時には存在しない「64次元オール0」になっていた。DeepWalk上では子馬は両親の
+    #          すぐ近くに埋め込まれる（既存馬で 自分 vs 両親平均 のコサイン類似度 中央値0.98）ため、
+    #          父・母のベクトルの平均で補完する（片親のみあればその親のベクトル）。
+    #          ベクトル空間自体は変えないので、学習済みモデルの再学習は不要。
+    df = _fill_missing_pedigree_vectors(df, vec_cols)
+
     df[vec_cols] = df[vec_cols].fillna(0.0)
 
     # ========================================
