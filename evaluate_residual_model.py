@@ -15,6 +15,8 @@ FILE_ODDS = str(DATA_DIR / "odds_api_progress.csv")
 FILE_RETURN = str(DATA_DIR / "return_data_progress.csv")
 POOL_FEATURES = ['x_place', 'win_place_gap', 'place_spread']
 HOLDOUT_START = "2026-06-01"
+FINAL2_START = "2026-09-07"
+MIN_FINAL2_RACES = 1000
 SPLITS = {
     'dev':   {'train': ("2024-01-01", "2025-07-01"), 'valid': ("2025-07-01", "2026-01-01"),
               'test': ("2026-01-01", HOLDOUT_START)},
@@ -22,6 +24,9 @@ SPLITS = {
               'test': ("2026-05-01", HOLDOUT_START)},
     'final': {'train': ("2024-01-01", "2025-10-01"), 'valid': ("2025-10-01", HOLDOUT_START),
               'test': (HOLDOUT_START, "2100-01-01")},
+    # 2026-09-15 に事前登録した2回目の最終テスト（CLAUDE.md 参照）。対象期間が MIN_FINAL2_RACES に達するまで評価しない
+    'final2': {'train': ("2024-01-01", "2026-03-01"), 'valid': ("2026-03-01", FINAL2_START),
+               'test': (FINAL2_START, "2100-01-01")},
 }
 FEATURE_SETS = {
     '既存特徴量': BASE_FEATURES,
@@ -120,7 +125,7 @@ def main():
     ap.add_argument('--split', default='dev', choices=list(SPLITS))
     ap.add_argument('--sets', default=','.join(FEATURE_SETS), help="評価する特徴量セット（カンマ区切り）")
     args = ap.parse_args()
-    if args.split == 'final':
+    if args.split in ('final', 'final2'):
         print("*** 最終テスト期間を評価します。この結果を見て特徴量や設定を変えないこと ***")
 
     df = load()
@@ -128,6 +133,9 @@ def main():
     part = {k: df[(df['race_date'] >= s) & (df['race_date'] < e)] for k, (s, e) in sp.items()}
     for k, v in part.items():
         print(f"{k:<5} {sp[k][0]}〜{sp[k][1]}: {v['race_id'].nunique()}R")
+    if args.split == 'final2' and part['test']['race_id'].nunique() < MIN_FINAL2_RACES:
+        print(f"最終テスト2の対象レースが {MIN_FINAL2_RACES}R に達していないため評価しません。")
+        return
 
     alpha, _ = Races(part['train'], ['x_mkt']).fit()
     rs_te = Races(part['test'], ['x_mkt'])
