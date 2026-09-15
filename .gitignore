@@ -16,6 +16,7 @@ data/train/
 data/val/
 data/test/
 data/v2/
+data/nar/
 
 # 念のため個別ファイルも明示的に除外
 data/oof_features_cache.pkl
