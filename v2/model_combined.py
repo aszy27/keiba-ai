@@ -7,7 +7,7 @@
 #          B. オッズ + 基礎モデル（条件付きロジット）
 #          C. B を出発点に、残差を LightGBM で学習
 #          指標: 1レースあたり対数尤度の A との差と、期待値ベースの単勝回収率（確定オッズ・割引後）
-#   --final: 2026-09-07 以降を最終テストとして1回だけ評価する（docs/rebuild_plan.md の M5。設定は事前登録済み）
+#   --final: 2026-01-01〜2026-09-06 を最終テストとして1回だけ評価する（docs/rebuild_plan.md の M5。設定は事前登録済み）
 # 使い方: python -m v2.model_combined --build-base   # 段階1（新しいレースを予測に含めるときも再実行する）
 #         python -m v2.model_combined --year 2024     # 段階2（開発。2024 か 2025）
 #         python -m v2.model_combined --final         # 最終テスト（1回だけ）
@@ -29,9 +29,9 @@ EV_THRESHOLDS = [1.0, 1.1, 1.2, 1.3, 1.5]
 ODDS_HAIRCUT = [1.00, 0.95, 0.90]   # 購入時点のオッズは確定より不利にずれうる。スナップショットで実測するまでの目安
 RESIDUAL_PARAMS = dict(PARAMS, learning_rate=0.02, num_leaves=15, min_data_in_leaf=500)
 
-# M5（2026-09-15 事前登録。判定まで変えないこと）
-FINAL_SPLIT = {"train": ("2022-01-01", "2026-01-01"), "valid": ("2026-01-01", "2026-09-07"),
-               "report": ("2026-09-07", "2100-01-01")}
+# M5（2026-09-15 事前登録。期間を今あるデータ 2026-01-01〜2026-09-06 に変更して登録し直した。判定まで変えないこと）
+FINAL_SPLIT = {"train": ("2022-01-01", "2025-01-01"), "valid": ("2025-01-01", "2026-01-01"),
+               "report": ("2026-01-01", "2026-09-07")}
 MIN_FINAL_RACES = 1000
 FINAL_THRESHOLD = 1.1
 FINAL_CI_LEVEL = 0.975
