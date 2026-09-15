@@ -47,7 +47,7 @@ def market_alpha():
     d = d[d.groupby("race_id")["finish_pos"].transform(lambda s: (s == 1).sum()) == 1]
     inv = 1.0 / d["win_odds"]
     x = np.log(inv / inv.groupby(d["race_id"]).transform("sum")).values
-    return fit_logit(x, RaceGroups(d["race_id"], (d["finish_pos"] == 1).astype(float)))[0]
+    return fit_logit(x, RaceGroups(d["race_id"], (d["finish_pos"] == 1).fillna(False).astype(float)))[0]
 
 
 _COMBOS = {}
@@ -97,7 +97,7 @@ def accumulate(d, pay, alpha):
         q = (1.0 / odds) ** alpha
         p = q / q.sum()
         pop = pd.Series(odds).rank(method="min").values          # 確定オッズの順位＝人気
-        pos = r["finish_pos"].values
+        pos = r["finish_pos"].fillna(0).to_numpy(dtype=int)     # 競走中止は着順なし（0）
         first, second, third = (int(np.flatnonzero(pos == k)[0]) for k in (1, 2, 3))
         winners = {"quinella": sorted([first, second]), "exacta": [first, second],
                    "trio": sorted([first, second, third]), "trifecta": [first, second, third]}
