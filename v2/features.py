@@ -20,6 +20,7 @@ RESULT_COLS = ["finish_pos", "time_sec", "margin_sec", "last_3f", "passage", "co
 HISTORY_STATUS = ("finished", "dnf")
 BASE_RATE = {"win": 0.075, "top3": 0.22}   # 縮小推定の事前値（1レース約14頭の平均的な勝率・複勝率）
 FIG_CLIP, L3_CLIP = 15.0, 10.0              # スピード指数（秒/1000m）・上がりの相対値（秒）を丸める幅
+PACE_MIN_RACES = 5                          # ペースの基準（同じ芝ダ・距離の平均）に必要な過去レース数
 
 ID_COLS = ["race_id", "race_date", "horse_id", "horse_number", "jockey_id", "trainer_id"]
 LABEL_COLS = ["status", "finish_pos", "win", "top3"]
@@ -47,15 +48,19 @@ RUN_METRICS = [("fig", 3), ("l3_rel", 3), ("rel_pos", 3), ("margin", 3), ("corne
 HISTORY_FEATURES = (["h_runs", "h_dnf", "h_prize", "fig_best5", "days_since", "dist_change", "class_change",
                      "burden_change", "surface_change", "place_change"]
                     + [f"{c}_last" for c, _ in RUN_METRICS] + [f"{c}_mean{n}" for c, n in RUN_METRICS])
+# 展開・不利の指標（2026-09-16 追加。docs/rebuild_plan.md「展開・不利の特徴量」）
+TRIP_METRICS = [("pace_adv", 3), ("trouble", 3), ("late_gain", 3), ("unlucky", 3)]
+TRIP_FEATURES = [f"{c}_last" for c, _ in TRIP_METRICS] + [f"{c}_mean{n}" for c, n in TRIP_METRICS] + ["trouble_max3"]
 # レース内で相対化する特徴量
 FIELD_RELATIVE = ["fig_mean3", "fig_best5", "l3_rel_mean3", "rel_pos_mean3", "horse_top3", "jockey_top3",
                   "trainer_top3", "burden"]
 FIELD_FEATURES = (["gate_rel", "field_front_share", "style_vs_field"]
                   + [f"{c}_{s}" for c in FIELD_RELATIVE for s in ("vs_field", "rank")])
 FEATURES = CATEGORICAL + PRE_RACE + HISTORY_FEATURES + ENTITY_FEATURES + FIELD_FEATURES
+FEATURES_TRIP = FEATURES + TRIP_FEATURES
 
 
-def load_tables(names=("races", "runners", "horses", "courses", "training")):
+def load_tables(names=("races", "runners", "horses", "courses", "training", "laps")):
     return {n: pd.read_parquet(table_path(n)) for n in names}
 
 
@@ -98,6 +103,8 @@ def base_frame(t):
     df = df.merge(t["courses"], on=["place", "surface"], how="left")
     tr = t["training"].assign(oikiri=lambda x: x["oikiri_rank"].map(OIKIRI_ORDER).astype(float))
     df = df.merge(tr[["race_id", "horse_id", "oikiri"]], on=["race_id", "horse_id"], how="left")
+    if "laps" in t:
+        df = df.merge(t["laps"][["race_id", "lap_times", "first_segment_m"]], on="race_id", how="left")
 
     # 数値の nullable 型（Int8 等）は計算・LightGBM 用に float にそろえる
     for c in df.columns:
@@ -113,6 +120,21 @@ def base_frame(t):
     df["n_starters"] = df.groupby("race_id")["horse_id"].transform("size").astype(float)
     df["month"] = df["race_date"].dt.month.astype(float)
     return df.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
+
+
+def _race_pace(times, first_segment):
+    """前半3F と後半3F の200mあたりの差（正なら前半が遅い）。端数距離のコースは最初の短い区間を除く"""
+    if not isinstance(times, (list, np.ndarray)):
+        return np.nan
+    t = list(times)[1:] if first_segment == 100 else list(times)
+    return float(np.mean(t[:3]) - np.mean(t[-3:])) if len(t) >= 6 else np.nan
+
+
+def _max_position_drop(passage):
+    if not isinstance(passage, str):
+        return np.nan
+    pos = [int(x) for x in passage.split("-") if x.isdigit()]
+    return float(max([0] + [b - a for a, b in zip(pos, pos[1:])]))   # 順位を落としていなければ0
 
 
 def past_run_metrics(df):
@@ -142,7 +164,29 @@ def past_run_metrics(df):
     df["margin"] = df["margin_sec"].clip(upper=5).where(fin_mask)
     df["corner_rel"] = ((df["corner_first"] - 1) / (df["n_starters"] - 1).clip(lower=1)).where(hist)
     df["dnf"] = (df["status"] == "dnf").astype(float)
+    if "lap_times" in df.columns:
+        trip_metrics(df, fin_mask, n_fin)
     return df
+
+
+def trip_metrics(df, fin_mask, n_fin):
+    """展開・不利の指標（レース後に分かる。未確定の行は NaN）"""
+    races = df.drop_duplicates("race_id")[["race_id", "race_date", "surface", "distance", "lap_times", "first_segment_m"]].copy()
+    races["pace"] = [_race_pace(t, f) for t, f in zip(races["lap_times"], races["first_segment_m"])]
+    has_result = df.groupby("race_id")["is_hist"].any()
+    races.loc[~races["race_id"].map(has_result).astype(bool), "pace"] = np.nan   # 未確定のレースのラップは使わない
+    ev = races[races["pace"].notna()].assign(n=1.0)
+    prior = cum_before(ev, ["surface", "distance"], races, ["pace", "n"])
+    pace_rel = (races["pace"] - prior["pace"] / prior["n"]).where(prior["n"] >= PACE_MIN_RACES)
+    df["pace_rel"] = df["race_id"].map(pd.Series(pace_rel.values, index=races["race_id"].values))
+
+    spread = (df["n_starters"] - 1).clip(lower=1)
+    df["pace_adv"] = (df["pace_rel"] * (0.5 - df["corner_rel"])).where(fin_mask)
+    df["trouble"] = (df["passage"].astype(object).map(_max_position_drop) / spread).where(fin_mask)
+    df["late_gain"] = ((df["corner_last"] - df["finish_pos"]) / spread).where(fin_mask)
+    l3_rank = df[fin_mask].groupby("race_id")["last_3f"].rank(method="average")
+    l3_rel_rank = ((l3_rank - 1) / (n_fin[fin_mask] - 1).clip(lower=1)).reindex(df.index)
+    df["unlucky"] = (df["rel_pos"] - l3_rel_rank).where(fin_mask)
 
 
 def horse_history(df):
@@ -153,15 +197,18 @@ def horse_history(df):
     state["h_runs"] = g.cumcount() + 1.0
     state["h_dnf"] = g["dnf"].cumsum()
     state["h_prize"] = g["prize"].cumsum()
-    for col, n in RUN_METRICS:
+    metrics = RUN_METRICS + (TRIP_METRICS if "pace_adv" in h.columns else [])
+    for col, n in metrics:
         state[f"{col}_last"] = h[col]
         state[f"{col}_mean{n}"] = g[col].rolling(n, min_periods=1).mean().reset_index(level=0, drop=True)
     state["fig_best5"] = g["fig"].rolling(5, min_periods=1).max().reset_index(level=0, drop=True)
+    if "trouble" in h.columns:
+        state["trouble_max3"] = g["trouble"].rolling(3, min_periods=1).max().reset_index(level=0, drop=True)
     for col in ["race_date", "distance", "class_ord", "burden", "surface", "place"]:
         state[f"last_{col}"] = h[col]
 
     s = asof_before(state, ["horse_id"], df)
-    out = s[[c for c in HISTORY_FEATURES if c in s.columns]].copy()
+    out = s[[c for c in HISTORY_FEATURES + TRIP_FEATURES if c in s.columns]].copy()
     out["h_runs"] = out["h_runs"].fillna(0.0)
     out["days_since"] = (df["race_date"] - s["last_race_date"]).dt.days.astype(float)
     out["dist_change"] = df["distance"] - s["last_distance"]
@@ -199,13 +246,15 @@ def field_features(df):
 
 
 def build_features(t):
-    """戻り値: 1行 = 1頭（取消・除外を除く）。ID・ラベル（status / finish_pos / win / top3）・特徴量（FEATURES）の列を持つ"""
+    """戻り値: 1行 = 1頭（取消・除外を除く）。ID・ラベル（status / finish_pos / win / top3）・特徴量の列を持つ。
+    t に laps があれば TRIP_FEATURES も作る"""
     df = past_run_metrics(base_frame(t))
     df = pd.concat([df, horse_history(df), entity_stats(df)], axis=1)
     df = pd.concat([df, field_features(df)], axis=1)
     for c in CATEGORICAL:
         df[c] = df[c].astype(object).astype("category")
-    return df[ID_COLS + LABEL_COLS + FEATURES]
+    feats = FEATURES_TRIP if "laps" in t else FEATURES
+    return df[ID_COLS + LABEL_COLS + feats]
 
 
 def main():
@@ -214,7 +263,7 @@ def main():
     start = time.time()
     f = build_features(load_tables())
     f.to_parquet(table_path("features"), index=False)
-    print(f"{len(f)}行 / {len(FEATURES)}特徴量 / {time.time() - start:.0f}秒 → {table_path('features')}")
+    print(f"{len(f)}行 / {len(FEATURES_TRIP)}特徴量 / {time.time() - start:.0f}秒 → {table_path('features')}")
 
 
 if __name__ == "__main__":

@@ -25,6 +25,16 @@ def test_asof_before_with_missing_keys_and_unsorted_query():
     assert out["v"].iloc[0] == 2.0 and np.isnan(out["v"].iloc[1]) and out["v"].iloc[2] == 1.0
 
 
+def test_race_pace_and_position_drop():
+    # 200m ラップ: 前半3F 12.0 平均、後半3F 11.5 平均 → 0.5（前半が遅い）
+    assert ft._race_pace([12.0, 12.0, 12.0, 11.5, 11.5, 11.5], 200) == pytest.approx(0.5)
+    # 端数距離（最初が100m）は最初の区間を除く
+    assert ft._race_pace([6.5, 12.0, 12.0, 12.0, 11.5, 11.5, 11.5], 100) == pytest.approx(0.5)
+    assert np.isnan(ft._race_pace(None, 200)) and np.isnan(ft._race_pace([12.0] * 5, 200))
+    assert ft._max_position_drop("3-3-8-6") == 5 and ft._max_position_drop("5-4-3-2") == 0
+    assert np.isnan(ft._max_position_drop(None))
+
+
 # ---- 実データでのリークテスト（data/v2 の表が無ければスキップ） ----
 needs_data = pytest.mark.skipif(not table_path("runners").exists(), reason="data/v2 の表が無い")
 WINDOW = ("2023-09-01", "2024-01-31")
@@ -36,8 +46,8 @@ def tables():
     t = ft.load_tables()
     races = t["races"][t["races"]["race_date"].between(*WINDOW)]
     t["races"] = races
-    t["runners"] = t["runners"][t["runners"]["race_id"].isin(races["race_id"])]
-    t["training"] = t["training"][t["training"]["race_id"].isin(races["race_id"])]
+    for name in ["runners", "training", "laps"]:
+        t[name] = t[name][t[name]["race_id"].isin(races["race_id"])]
     return t
 
 
@@ -57,7 +67,8 @@ def _same(a, b):
 def test_future_data_does_not_change_features(tables, full):
     keep = tables["races"]["race_date"] <= CUTOFF
     cut = dict(tables, races=tables["races"][keep])
-    cut["runners"] = tables["runners"][tables["runners"]["race_id"].isin(cut["races"]["race_id"])]
+    for name in ["runners", "laps"]:
+        cut[name] = tables[name][tables[name]["race_id"].isin(cut["races"]["race_id"])]
     before = ft.build_features(cut)
     _same(before, full[full["race_date"] <= CUTOFF])
 
@@ -70,13 +81,13 @@ def test_same_day_results_do_not_change_features(tables, full):
     on_day = r["race_id"].isin(day_ids) & (r["status"] != "scratched")
     r.loc[on_day, ft.RESULT_COLS] = np.nan
     r.loc[on_day, "status"] = "entry"
-    blanked = ft.build_features(dict(tables, runners=r))
+    laps = tables["laps"][~tables["laps"]["race_id"].isin(day_ids)]   # 当日のラップも未確定として消す
+    blanked = ft.build_features(dict(tables, runners=r, laps=laps))
     _same(blanked[blanked["race_date"] == CUTOFF], full[full["race_date"] == CUTOFF])
 
 
 @needs_data
 def test_features_are_not_constant(full):
-    feats = full[ft.FEATURES]
-    later = feats[full["race_date"] >= "2023-12-01"]
+    later = full.loc[full["race_date"] >= "2023-12-01", ft.FEATURES_TRIP]
     constant = [c for c in later.columns if later[c].nunique(dropna=True) <= 1]
     assert constant == [], constant
