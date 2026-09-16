@@ -23,9 +23,15 @@ SAMEDAY_EXTRA = ["bias_gate", "bias_style", "bias_n", "gate_x_bias", "style_x_bi
 CONNECTION2 = ["owner_trainer_top3", "is_club", "jockey_style_top3", "jockey_gate_top3"]
 PREV_LEVEL = ["prev_field_fig", "prev_field_best", "prev_field_gap"]
 HORSE2 = ["h_fig_extend_mean", "h_fig_shorten_mean", "h_fig_layoff_mean", "h_layoff_n"]
+# 第3弾（2026-09-17）
+OIKIRI2 = ["trainer_oikiri_mean", "oikiri_vs_trainer", "oikiri_prev_diff", "h_fig_when_sharp", "oikiri_vs_field"]
+GATE_PACE2 = ["course_gate_bias", "gate_x_course_bias", "course_pace_mean", "style_x_course_pace"]
+CONDITION2 = ["weight_vs_own_mean", "weight_vs_best", "h_fig_interval_mean", "is_first_distance", "is_class_up_first",
+              "corner_rel_std5"]
 GROUPS = {"馬の詳細実績": HORSE_EXTRA, "人": CONNECTION_EXTRA, "血統": PEDIGREE_EXTRA,
           "レースの形": SHAPE_EXTRA, "当日バイアス": SAMEDAY_EXTRA,
-          "人2": CONNECTION2, "前走のレベル": PREV_LEVEL, "馬の条件別2": HORSE2}
+          "人2": CONNECTION2, "前走のレベル": PREV_LEVEL, "馬の条件別2": HORSE2,
+          "調教2": OIKIRI2, "枠・展開2": GATE_PACE2, "馬の状態2": CONDITION2}
 EXTRA_FEATURES = [c for cols in GROUPS.values() for c in cols]
 LAYOFF_DAYS = 60
 
@@ -175,6 +181,72 @@ def _horse2(df, ev, out):
     out["h_layoff_n"] = s["fig_n"].where(layoff > 0)
 
 
+def _oikiri2(df, ev, out):
+    """追い切り評価は厩舎ごとに基準が違うので、厩舎の平均との差を見る"""
+    e = ev.assign(o_sum=ev["oikiri"].fillna(0.0), o_n=ev["oikiri"].notna().astype(float))
+    s = ft.cum_before(e, ["trainer_id"], df, ["o_sum", "o_n"], window_days=1095)
+    out["trainer_oikiri_mean"] = s["o_sum"] / s["o_n"].replace(0, np.nan)
+    out["oikiri_vs_trainer"] = df["oikiri"] - out["trainer_oikiri_mean"]
+
+    state = ev.sort_values(["horse_id", "race_date"])[["horse_id", "race_date", "oikiri"]].rename(columns={"oikiri": "prev_oikiri"})
+    out["oikiri_prev_diff"] = df["oikiri"] - ft.asof_before(state, ["horse_id"], df)["prev_oikiri"]
+
+    sharp = (df["oikiri"] >= 4).astype(float)     # A評価以上
+    s = ft.cum_before(ev.assign(_s=(ev["oikiri"] >= 4).astype(float)), ["horse_id", "_s"], df.assign(_s=sharp),
+                      ["fig_sum", "fig_n"])
+    out["h_fig_when_sharp"] = (s["fig_sum"] / s["fig_n"].replace(0, np.nan)).where(sharp > 0)
+    out["oikiri_vs_field"] = df["oikiri"] - df.groupby("race_id")["oikiri"].transform("mean")
+
+
+def _gate_pace2(df, ev, out):
+    """コース固有の枠の有利不利と平均ペース（その日より前の同条件のレースから）"""
+    races = df.drop_duplicates("race_id")[["race_id", "race_date", "place", "surface", "distance", "dist_bucket"]].copy()
+    win = df[(df["status"] == "finished") & (df["finish_pos"] == 1)]
+    races = races.join(win.groupby("race_id")[["gate_rel"]].mean(), on="race_id")
+    races["pace"] = races["race_id"].map(df.drop_duplicates("race_id").set_index("race_id")["pace_rel"].add(0))
+    ev_r = races[races["gate_rel"].notna()].assign(n=1.0)
+    s = ft.cum_before(ev_r, ["place", "surface", "dist_bucket"], races, ["gate_rel", "n"])
+    races["course_gate_bias"] = s["gate_rel"] / s["n"].replace(0, np.nan) - 0.5   # 正なら外枠が勝ちやすいコース
+
+    pace_ev = df.drop_duplicates("race_id")[["race_id", "race_date", "place", "surface", "distance"]].copy()
+    pace_ev["pace"] = df.drop_duplicates("race_id").set_index("race_id")["pace_rel"].values
+    pace_ev = pace_ev[pace_ev["pace"].notna()].assign(n=1.0)
+    s = ft.cum_before(pace_ev, ["place", "surface", "distance"], races, ["pace", "n"])
+    races["course_pace_mean"] = s["pace"] / s["n"].replace(0, np.nan)
+
+    r = races.set_index("race_id")
+    for c in ["course_gate_bias", "course_pace_mean"]:
+        out[c] = df["race_id"].map(r[c])
+    out["gate_x_course_bias"] = (df["gate_rel"] - 0.5) * out["course_gate_bias"]
+    out["style_x_course_pace"] = (0.5 - df["corner_rel_mean5"]) * out["course_pace_mean"]
+
+
+def _condition2(df, ev, out):
+    """馬体重の水準、休養パターン、初距離・昇級初戦、1角位置のばらつき"""
+    h = ev.sort_values(["horse_id", "race_date"])
+    g = h.groupby("horse_id", sort=False)
+    state = h[["horse_id", "race_date"]].copy()
+    state["own_weight_mean"] = g["weight"].rolling(10, min_periods=1).mean().reset_index(level=0, drop=True)
+    state["corner_rel_std5"] = g["corner_rel"].rolling(5, min_periods=2).std().reset_index(level=0, drop=True)
+    best = g["fig"].cummax()
+    at_best = h["weight"].where(h["fig"] >= best)          # 自己ベストを更新した走の馬体重
+    state["weight_at_best"] = at_best.groupby(h["horse_id"], sort=False).ffill()
+    s = ft.asof_before(state, ["horse_id"], df)
+    out["weight_vs_own_mean"] = df["weight"] - s["own_weight_mean"]
+    out["weight_vs_best"] = df["weight"] - s["weight_at_best"]
+    out["corner_rel_std5"] = s["corner_rel_std5"]
+
+    bucket = pd.cut(df["days_since"], [-1, 8, 21, 42, 70, 180, 10000], labels=False).astype(float)
+    ev_bucket = pd.cut(ev["days_since"], [-1, 8, 21, 42, 70, 180, 10000], labels=False).astype(float)
+    s = ft.cum_before(ev.assign(_b=ev_bucket), ["horse_id", "_b"], df.assign(_b=bucket), ["fig_sum", "fig_n"])
+    out["h_fig_interval_mean"] = s["fig_sum"] / s["fig_n"].replace(0, np.nan)
+
+    s = ft.cum_before(ev.assign(n=1.0), ["horse_id", "distance"], df, ["n"])
+    out["is_first_distance"] = (s["n"] == 0).astype(float)
+    s = ft.cum_before(ev.assign(n=1.0), ["horse_id", "class_ord"], df, ["n"])
+    out["is_class_up_first"] = ((s["n"] == 0) & (df["class_change"] > 0)).astype(float)
+
+
 def build(df):
     out = pd.DataFrame(index=df.index)
     hist = df[df["is_hist"]]
@@ -187,4 +259,7 @@ def build(df):
     _connection2(df, ev, out)
     _prev_level(df, out)
     _horse2(df, ev, out)
+    _oikiri2(df, ev, out)
+    _gate_pace2(df, ev, out)
+    _condition2(df, ev, out)
     return out[EXTRA_FEATURES]
