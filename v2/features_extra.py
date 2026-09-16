@@ -19,8 +19,13 @@ PEDIGREE_EXTRA = ["sire_going_top3", "sire_going_n", "dam_fig_mean"]
 SHAPE_EXTRA = ["field_fig_mean", "field_fig_std", "gap_to_best", "n_front", "weight_vs_field", "age_vs_field",
                "days_since_vs_field", "dist_change_x_style"]
 SAMEDAY_EXTRA = ["bias_gate", "bias_style", "bias_n", "gate_x_bias", "style_x_bias"]
+# 第2弾（2026-09-17）
+CONNECTION2 = ["owner_trainer_top3", "is_club", "jockey_style_top3", "jockey_gate_top3"]
+PREV_LEVEL = ["prev_field_fig", "prev_field_best", "prev_field_gap"]
+HORSE2 = ["h_fig_extend_mean", "h_fig_shorten_mean", "h_fig_layoff_mean", "h_layoff_n"]
 GROUPS = {"馬の詳細実績": HORSE_EXTRA, "人": CONNECTION_EXTRA, "血統": PEDIGREE_EXTRA,
-          "レースの形": SHAPE_EXTRA, "当日バイアス": SAMEDAY_EXTRA}
+          "レースの形": SHAPE_EXTRA, "当日バイアス": SAMEDAY_EXTRA,
+          "人2": CONNECTION2, "前走のレベル": PREV_LEVEL, "馬の条件別2": HORSE2}
 EXTRA_FEATURES = [c for cols in GROUPS.values() for c in cols]
 LAYOFF_DAYS = 60
 
@@ -112,6 +117,64 @@ def _sameday_bias(df, out):
     out["style_x_bias"] = (df["corner_rel_mean5"] - 0.5) * out["bias_style"]
 
 
+CLUB_WORDS = ("レーシング", "クラブ", "ファーム", "ホースクラブ", "サラブレッド", "（株）", "(株)", "（有）", "(有)")
+
+
+def _buckets(df):
+    """脚質・枠の区分（発走前に分かる値だけから作る）"""
+    style = pd.cut(df["corner_rel_mean5"], [-0.01, 0.25, 0.5, 0.75, 1.01], labels=False).fillna(-1.0)
+    gate = pd.cut(df["gate_rel"], [-0.01, 1 / 3, 2 / 3, 1.01], labels=False).astype(float)
+    return style, gate
+
+
+def _connection2(df, ev, out):
+    s = ft.cum_before(ev, ["owner", "trainer_id"], df, ["n", "top3"], window_days=1095)
+    out["owner_trainer_top3"] = _shrunk(s, 10)
+    owner = df["owner"].astype(object).fillna("")
+    out["is_club"] = owner.map(lambda x: float(any(w in x for w in CLUB_WORDS)))
+
+    style, gate = _buckets(df)
+    ev_style, ev_gate = _buckets(ev)
+    for name, key, q_col, e_col in [("jockey_style_top3", "_style", style, ev_style), ("jockey_gate_top3", "_gate", gate, ev_gate)]:
+        s = ft.cum_before(ev.assign(**{key: e_col}), ["jockey_id", key], df.assign(**{key: q_col}),
+                          ["n", "top3"], window_days=1095)
+        out[name] = _shrunk(s, 20)
+
+
+def _prev_level(df, out):
+    """前走で相手にした馬の強さ（そのレースの発走前に分かっていた指数の、自分以外の平均・最高）"""
+    rg = df.groupby("race_id")["fig_mean3"]
+    n_known = rg.transform("count")
+    others_mean = (rg.transform("sum") - df["fig_mean3"].fillna(0)) / (n_known - df["fig_mean3"].notna()).clip(lower=1)
+    best = rg.transform("max")
+    second = rg.transform(lambda x: x.nlargest(2).min() if x.notna().sum() >= 2 else np.nan)
+    others_best = np.where(df["fig_mean3"] >= best, second, best)
+
+    hist = df[df["is_hist"]]
+    state = hist[["horse_id", "race_date"]].copy()
+    state["prev_field_fig"] = others_mean[hist.index]
+    state["prev_field_best"] = pd.Series(others_best, index=df.index)[hist.index]
+    state["_own"] = hist["fig_mean3"]
+    s = ft.asof_before(state, ["horse_id"], df)
+    out["prev_field_fig"], out["prev_field_best"] = s["prev_field_fig"], s["prev_field_best"]
+    out["prev_field_gap"] = s["_own"] - s["prev_field_best"]   # 前走で相手との力差がどれだけあったか
+
+
+def _horse2(df, ev, out):
+    change = np.sign(df["dist_change"]).fillna(0.0)
+    ev_change = np.sign(ev["dist_change"]).fillna(0.0)
+    s = ft.cum_before(ev.assign(_c=ev_change), ["horse_id", "_c"], df.assign(_c=change), ["fig_sum", "fig_n"])
+    mean = s["fig_sum"] / s["fig_n"].replace(0, np.nan)
+    out["h_fig_extend_mean"] = mean.where(change > 0)      # 距離を延ばしたときの自分の指数
+    out["h_fig_shorten_mean"] = mean.where(change < 0)
+
+    layoff = (df["days_since"] >= LAYOFF_DAYS).astype(float)
+    s = ft.cum_before(ev.assign(_l=(ev["days_since"] >= LAYOFF_DAYS).astype(float)), ["horse_id", "_l"],
+                      df.assign(_l=layoff), ["fig_sum", "fig_n"])
+    out["h_fig_layoff_mean"] = (s["fig_sum"] / s["fig_n"].replace(0, np.nan)).where(layoff > 0)
+    out["h_layoff_n"] = s["fig_n"].where(layoff > 0)
+
+
 def build(df):
     out = pd.DataFrame(index=df.index)
     hist = df[df["is_hist"]]
@@ -121,4 +184,7 @@ def build(df):
     _pedigree_extra(df, ev, out)
     _shape_extra(df, out)
     _sameday_bias(df, out)
+    _connection2(df, ev, out)
+    _prev_level(df, out)
+    _horse2(df, ev, out)
     return out[EXTRA_FEATURES]
