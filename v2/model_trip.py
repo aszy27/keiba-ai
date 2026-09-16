@@ -15,7 +15,7 @@ import pandas as pd
 
 from v2 import features as ft
 from v2 import features_extra as fx
-from v2.model_base import eligible
+from v2.model_base import PARAMS, eligible
 from v2.model_combined import RESIDUAL_PARAMS, _train, ev_table
 from v2.paths import V2_DIR, table_path
 from v2.softmax import RaceGroups, bootstrap_ci, fit_logit
@@ -29,6 +29,7 @@ DEV_SPLITS = {
 FINAL_SPLIT = {"train": ("2016-01-01", "2020-01-01"), "valid": ("2020-01-01", "2021-01-01"), "report": ("2021-01-01", "2024-01-01")}
 THRESHOLDS = [1.0, 1.1, 1.2, 1.3]
 MIN_BETS = 300
+SEEDS = (42, 7, 2024)   # 基礎モデルはこの3シードの平均を使う
 # 2021〜2023年は展開(trip)の判定で一度使っているため、2候補目は区間を97.5%にする（docs/rebuild_plan.md）
 FINAL_CI_LEVEL = 0.975
 
@@ -46,10 +47,16 @@ def build_base(df, names=None):
             tr = df[(df["race_date"] >= "2013-01-01") & (df["race_date"] < f"{year - 1}-01-01")].reset_index(drop=True)
             va = df[(df["race_date"] >= f"{year - 1}-01-01") & (df["race_date"] < f"{year}-01-01")].reset_index(drop=True)
             te = df[(df["race_date"] >= f"{year}-01-01") & (df["race_date"] < f"{year + 1}-01-01")].reset_index(drop=True)
-            m = _train(tr, va, feats)
-            beta = fit_logit(m.predict(va[feats], num_iteration=m.best_iteration), RaceGroups(va["race_id"], va["win"]))[0]
-            out.append(te[["race_id", "horse_id"]].assign(u_base=beta * m.predict(te[feats], num_iteration=m.best_iteration)))
-            print(f"[{name}] {year}: 学習 {tr['race_id'].nunique()}R / 木 {m.best_iteration}本 / 温度 {beta:.3f}", flush=True)
+            # 複数シードの平均でブレを減らす（開発期間で +0.0038 [+0.0013, +0.0063]。docs/rebuild_plan.md「学習設定の調整」）
+            u_va, u_te, rounds = 0.0, 0.0, []
+            for seed in SEEDS:
+                m = _train(tr, va, feats, params=dict(PARAMS, seed=seed))
+                u_va = u_va + m.predict(va[feats], num_iteration=m.best_iteration) / len(SEEDS)
+                u_te = u_te + m.predict(te[feats], num_iteration=m.best_iteration) / len(SEEDS)
+                rounds.append(m.best_iteration)
+            beta = fit_logit(u_va, RaceGroups(va["race_id"], va["win"]))[0]
+            out.append(te[["race_id", "horse_id"]].assign(u_base=beta * u_te))
+            print(f"[{name}] {year}: 学習 {tr['race_id'].nunique()}R / 木 {rounds}本 / 温度 {beta:.3f}", flush=True)
         pd.concat(out, ignore_index=True).to_parquet(base_path(name), index=False)
 
 
