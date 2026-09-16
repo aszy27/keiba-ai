@@ -199,6 +199,13 @@ def build_odds(notes):
         notes.append(Issue("INFO", "odds: 旧 CSV で (race_id, 馬番) が重複（最後の行を使用）", n.nunique(), list(n[:8])))
         o = o.drop_duplicates(["race_id", "horse_number"], keep="last")
     win = nz.to_num(o["win_odds"])
+    # 1レースの全馬が負の値（取消扱い）で返るのは、そのレースのオッズが API に無い場合。本物の取消と区別して捨てる
+    has_odds = (win > 0).groupby(o["race_id"]).transform("any")
+    if not has_odds.all():
+        ids = o.loc[~has_odds, "race_id"]
+        notes.append(Issue("INFO", "odds: 全馬が取消扱いで返るレース（オッズ無しとして除外）", ids.nunique(),
+                           list(ids.unique()[:8])))
+        o, win = o[has_odds], win[has_odds]
     pop = nz.to_num(o["popularity"])
     place_min, place_max = nz.to_num(o["place_min"]), nz.to_num(o["place_max"])
     # API は取消を -3.0、除外を -2.0 で返す

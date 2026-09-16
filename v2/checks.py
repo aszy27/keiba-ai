@@ -142,7 +142,8 @@ def check_odds(odds, runners, payouts, races):
     _add(out, "ERROR", "odds: (race_id, 馬番) の重複", o.loc[o.duplicated(["race_id", "horse_number"]), "race_id"])
     m = o.merge(runners[["race_id", "horse_number", "status", "finish_pos"]], on=["race_id", "horse_number"],
                 how="left", indicator=True)
-    _add(out, "ERROR", "odds: 出走馬に無い馬番", m.loc[m["_merge"] == "left_only", "race_id"])
+    _rate(out, "odds: 出走馬に無い馬番", m.loc[m["_merge"] == "left_only", "race_id"], o["race_id"].nunique(), 0.005,
+          "旧データに取消馬の行が無いレースがある")
     _add(out, "ERROR", "odds: 取消・除外なのに完走している", m.loc[(m["odds_status"] != "ok") & (m["status"] == "finished"), "race_id"])
 
     fin = runners[(runners["status"] == "finished") & runners["race_id"].isin(o["race_id"])]
