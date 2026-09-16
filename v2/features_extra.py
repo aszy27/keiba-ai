@@ -28,10 +28,15 @@ OIKIRI2 = ["trainer_oikiri_mean", "oikiri_vs_trainer", "oikiri_prev_diff", "h_fi
 GATE_PACE2 = ["course_gate_bias", "gate_x_course_bias", "course_pace_mean", "style_x_course_pace"]
 CONDITION2 = ["weight_vs_own_mean", "weight_vs_best", "h_fig_interval_mean", "is_first_distance", "is_class_up_first",
               "corner_rel_std5"]
+# 第4弾（2026-09-17）
+DAY_ADJ = ["fig_adj_last", "fig_adj_mean3", "fig_adj_best5", "h_fig_adj_mean"]
+HORSE_PERSON = ["horse_jockey_n", "horse_jockey_top3", "horse_jockey_fig_mean", "trainer_class_top3"]
+CAREER = ["runs_90d", "interval_sum3", "career_days", "h_fig_class_mean"]
 GROUPS = {"馬の詳細実績": HORSE_EXTRA, "人": CONNECTION_EXTRA, "血統": PEDIGREE_EXTRA,
           "レースの形": SHAPE_EXTRA, "当日バイアス": SAMEDAY_EXTRA,
           "人2": CONNECTION2, "前走のレベル": PREV_LEVEL, "馬の条件別2": HORSE2,
-          "調教2": OIKIRI2, "枠・展開2": GATE_PACE2, "馬の状態2": CONDITION2}
+          "調教2": OIKIRI2, "枠・展開2": GATE_PACE2, "馬の状態2": CONDITION2,
+          "当日補正の指数": DAY_ADJ, "馬×人": HORSE_PERSON, "キャリア・疲労": CAREER}
 EXTRA_FEATURES = [c for cols in GROUPS.values() for c in cols]
 LAYOFF_DAYS = 60
 
@@ -247,6 +252,54 @@ def _condition2(df, ev, out):
     out["is_class_up_first"] = ((s["n"] == 0) & (df["class_change"] > 0)).astype(float)
 
 
+def _day_adjusted(df, out):
+    """その日・その競馬場・芝ダの平均との差で指数を補正する（馬場が速い日の好時計を割り引く）。
+    使うのは過去走の補正済み指数だけなので、今回のレース当日の結果は入らない"""
+    day_mean = df.groupby([df["race_date"], df["place"], df["surface"]], observed=True)["fig"].transform("mean")
+    df["fig_adj"] = df["fig"] - day_mean
+
+    h = df[df["is_hist"]].sort_values(["horse_id", "race_date"])
+    g = h.groupby("horse_id", sort=False)
+    state = h[["horse_id", "race_date"]].copy()
+    state["fig_adj_last"] = h["fig_adj"]
+    state["fig_adj_mean3"] = g["fig_adj"].rolling(3, min_periods=1).mean().reset_index(level=0, drop=True)
+    state["fig_adj_best5"] = g["fig_adj"].rolling(5, min_periods=1).max().reset_index(level=0, drop=True)
+    s = ft.asof_before(state, ["horse_id"], df)
+    for c in ["fig_adj_last", "fig_adj_mean3", "fig_adj_best5"]:
+        out[c] = s[c]
+
+    ev = df[df["is_hist"]].assign(adj_sum=lambda x: x["fig_adj"].fillna(0.0), adj_n=lambda x: x["fig_adj"].notna().astype(float))
+    s = ft.cum_before(ev, ["horse_id"], df, ["adj_sum", "adj_n"])
+    out["h_fig_adj_mean"] = s["adj_sum"] / s["adj_n"].replace(0, np.nan)
+
+
+def _horse_person(df, ev, out):
+    """その馬とその騎手の相性、厩舎のクラス別成績"""
+    s = ft.cum_before(ev, ["horse_id", "jockey_id"], df, ["n", "top3", "fig_sum", "fig_n"])
+    out["horse_jockey_n"] = s["n"]
+    out["horse_jockey_top3"] = _shrunk(s, 3)
+    out["horse_jockey_fig_mean"] = s["fig_sum"] / s["fig_n"].replace(0, np.nan)
+    s = ft.cum_before(ev, ["trainer_id", "class_ord"], df, ["n", "top3"], window_days=1095)
+    out["trainer_class_top3"] = _shrunk(s, 20)
+
+
+def _career(df, ev, out):
+    """使い詰めかどうか、キャリアの長さ、クラス別の自分の指数"""
+    out["runs_90d"] = ft.cum_before(ev, ["horse_id"], df, ["n"], window_days=90)["n"]
+
+    h = ev.sort_values(["horse_id", "race_date"])
+    g = h.groupby("horse_id", sort=False)
+    state = h[["horse_id", "race_date"]].copy()
+    state["interval_sum3"] = g["days_since"].rolling(3, min_periods=1).sum().reset_index(level=0, drop=True)
+    state["first_date"] = g["race_date"].cummin()
+    s = ft.asof_before(state, ["horse_id"], df)
+    out["interval_sum3"] = s["interval_sum3"]
+    out["career_days"] = (df["race_date"] - s["first_date"]).dt.days.astype(float)
+
+    s = ft.cum_before(ev, ["horse_id", "class_ord"], df, ["fig_sum", "fig_n"])
+    out["h_fig_class_mean"] = s["fig_sum"] / s["fig_n"].replace(0, np.nan)
+
+
 def build(df):
     out = pd.DataFrame(index=df.index)
     hist = df[df["is_hist"]]
@@ -262,4 +315,7 @@ def build(df):
     _oikiri2(df, ev, out)
     _gate_pace2(df, ev, out)
     _condition2(df, ev, out)
+    _day_adjusted(df, out)
+    _horse_person(df, ev, out)
+    _career(df, ev, out)
     return out[EXTRA_FEATURES]
