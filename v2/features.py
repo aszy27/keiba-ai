@@ -99,7 +99,7 @@ def base_frame(t):
                             errors="ignore")
     df = t["runners"][t["runners"]["status"] != "scratched"].merge(races, on="race_id", how="left",
                                                                      validate="many_to_one")
-    df = df.merge(t["horses"][["horse_id", "sire_id", "dam_id"]], on="horse_id", how="left")
+    df = df.merge(t["horses"][["horse_id", "sire_id", "dam_id", "owner"]], on="horse_id", how="left")
     df = df.merge(t["courses"], on=["place", "surface"], how="left")
     tr = t["training"].assign(oikiri=lambda x: x["oikiri_rank"].map(OIKIRI_ORDER).astype(float))
     df = df.merge(tr[["race_id", "horse_id", "oikiri"]], on=["race_id", "horse_id"], how="left")
@@ -251,9 +251,13 @@ def build_features(t):
     df = past_run_metrics(base_frame(t))
     df = pd.concat([df, horse_history(df), entity_stats(df)], axis=1)
     df = pd.concat([df, field_features(df)], axis=1)
+    feats = FEATURES
+    if "laps" in t:
+        from v2 import features_extra as fx   # 循環importを避けるためここで読む
+        df = pd.concat([df, fx.build(df)], axis=1)
+        feats = FEATURES_TRIP + fx.EXTRA_FEATURES
     for c in CATEGORICAL:
         df[c] = df[c].astype(object).astype("category")
-    feats = FEATURES_TRIP if "laps" in t else FEATURES
     return df[ID_COLS + LABEL_COLS + feats]
 
 
@@ -263,7 +267,8 @@ def main():
     start = time.time()
     f = build_features(load_tables())
     f.to_parquet(table_path("features"), index=False)
-    print(f"{len(f)}行 / {len(FEATURES_TRIP)}特徴量 / {time.time() - start:.0f}秒 → {table_path('features')}")
+    n_feats = len(f.columns) - len(ID_COLS) - len(LABEL_COLS)
+    print(f"{len(f)}行 / {n_feats}特徴量 / {time.time() - start:.0f}秒 → {table_path('features')}")
 
 
 if __name__ == "__main__":

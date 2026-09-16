@@ -14,12 +14,13 @@ import numpy as np
 import pandas as pd
 
 from v2 import features as ft
+from v2 import features_extra as fx
 from v2.model_base import eligible
 from v2.model_combined import RESIDUAL_PARAMS, _train, ev_table
 from v2.paths import V2_DIR, table_path
 from v2.softmax import RaceGroups, bootstrap_ci, fit_logit
 
-FEATURE_SETS = {"base": ft.FEATURES, "trip": ft.FEATURES_TRIP}
+FEATURE_SETS = {"base": ft.FEATURES, "trip": ft.FEATURES_TRIP, "all": ft.FEATURES_TRIP + fx.EXTRA_FEATURES}
 BASE_YEARS = range(2015, 2024)
 DEV_SPLITS = {
     2019: {"train": ("2015-01-01", "2018-01-01"), "valid": ("2018-01-01", "2019-01-01"), "report": ("2019-01-01", "2020-01-01")},
@@ -34,8 +35,10 @@ def base_path(name):
     return V2_DIR / f"base_oos_{name}_2015_2023.parquet"
 
 
-def build_base(df):
+def build_base(df, names=None):
     for name, feats in FEATURE_SETS.items():
+        if names and name not in names:
+            continue
         out = []
         for year in BASE_YEARS:
             tr = df[(df["race_date"] >= "2013-01-01") & (df["race_date"] < f"{year - 1}-01-01")].reset_index(drop=True)
@@ -107,16 +110,18 @@ def pooled_threshold(preds):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-base", action="store_true")
+    ap.add_argument("--sets", help="対象の特徴量セット（カンマ区切り。既定はすべて）")
     ap.add_argument("--final", action="store_true")
     ap.add_argument("--threshold", type=float)
     args = ap.parse_args()
+    names = args.sets.split(",") if args.sets else list(FEATURE_SETS)
     df = eligible(pd.read_parquet(table_path("features")))
     if args.build_base:
-        build_base(df)
+        build_base(df, names)
         return
 
     markets = {}
-    for name in FEATURE_SETS:
+    for name in names:
         markets[name], n_mismatch = with_market(df, name)
         print(f"[{name}] オッズ・基礎モデルの予測がそろうレース {markets[name]['race_id'].nunique()}R（1着オッズと単勝払戻の不一致 {n_mismatch}R を除外）")
 
