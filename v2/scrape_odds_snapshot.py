@@ -1,11 +1,12 @@
 # v2/scrape_odds_snapshot.py
-# 開催日のレースについて、発走の数分前の単勝・複勝オッズを保存する。
-# 目的: 実際に買える時点のオッズと確定オッズの差を測り、確定オッズで計算した回収率をどれだけ割り引くべきかを決める。
+# 開催日のレースについて、発走前のオッズを何度も保存する（購入時点のオッズでの検証と、オッズの動きの記録のため）。
+# 既定は発走の 60/30/20/15/10/7/5/3/2/1 分前。判定に使うのは3分前（docs/rebuild_plan.md「前向き検証」）だが、
+# 取りこぼし対策と、締切直前のオッズの動きを残すために多めに取る。
 # 開催日の朝に起動しておくと、最終レースまで待機しながら取得を続ける（PCがスリープしないようにしておく）。
 #
-# 使い方: python -m v2.scrape_odds_snapshot                          # 今日。発走30分前・10分前・3分前
-#         python -m v2.scrape_odds_snapshot --minutes 15,5
-#         python -m v2.scrape_odds_snapshot --date 20260913 --now    # 指定日の全レースを今すぐ1回ずつ取得（動作確認用）
+# 使い方: python -m v2.scrape_odds_snapshot                          # 今日
+#         python -m v2.scrape_odds_snapshot --minutes 10,5,3
+#         python -m v2.scrape_odds_snapshot --date 20260913 --now    # 指定日の全レースを今すぐ1回取得（動作確認用）
 import argparse
 import random
 import re
@@ -25,7 +26,10 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
                          "Chrome/122.0.0.0 Safari/537.36",
            "Referer": "https://race.netkeiba.com/", "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"}
 COLS = ["race_id", "horse_number", "win_odds", "popularity", "place_odds_min", "place_odds_max",
-        "minutes_before", "post_time", "fetched_at", "official_datetime", "api_status"]
+        "minutes_before", "seconds_to_post", "post_time", "fetched_at", "official_datetime", "api_status"]
+LADDER = [60, 30, 20, 15, 10, 7, 5, 3, 2, 1]   # 発走の何分前に取るか
+TICK_SEC = 20        # 予定を確認する間隔
+GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切直後の値も残す）
 
 
 def race_schedule(date):
@@ -56,40 +60,65 @@ def fetch_odds(race_id):
     return rows, js.get("status", "")
 
 
+def load_done(path):
+    """途中から起動しても、取得済みの (race_id, 何分前) は飛ばす"""
+    if not path.exists():
+        return set()
+    d = pd.read_csv(path, usecols=["race_id", "minutes_before"], dtype={"race_id": str}, on_bad_lines="skip")
+    return set(zip(d["race_id"], pd.to_numeric(d["minutes_before"], errors="coerce")))
+
+
+def save(path, rows, race_id, minutes, post, status):
+    now = datetime.now()
+    df = pd.DataFrame(rows or [{"race_id": race_id}]).assign(
+        minutes_before=minutes, seconds_to_post=round((post - now).total_seconds()), post_time=f"{post:%H:%M}",
+        fetched_at=now.isoformat(timespec="seconds"), api_status=status)
+    df.reindex(columns=COLS).to_csv(path, mode="a", index=False, header=not path.exists(), encoding="utf-8")
+    print(f"  {now:%H:%M:%S} {race_id} 発走{minutes}分前（実際 {round((post - now).total_seconds())}秒前） "
+          f"{len(rows)}頭 status={status}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=datetime.now().strftime("%Y%m%d"))
-    ap.add_argument("--minutes", default="30,10,3", help="発走の何分前に取るか（カンマ区切り）")
-    ap.add_argument("--now", action="store_true", help="待たずに全レースを1回ずつ取得する")
+    ap.add_argument("--minutes", default=",".join(map(str, LADDER)), help="発走の何分前に取るか（カンマ区切り）")
+    ap.add_argument("--now", action="store_true", help="待たずに全レースを1回ずつ取得する（動作確認用）")
     args = ap.parse_args()
 
     schedule = race_schedule(args.date)
     if not schedule:
         print(f"{args.date} のレースが見つかりません（開催日でないか、ページの形式が変わった）")
         return
-    print(f"{args.date}: {len(schedule)}R（{schedule[0][1]:%H:%M}〜{schedule[-1][1]:%H:%M}）")
-    if args.now:
-        jobs = [(datetime.now(), rid, post, None) for rid, post in schedule]
-    else:
-        minutes = [int(m) for m in args.minutes.split(",")]
-        jobs = sorted((post - timedelta(minutes=m), rid, post, m) for rid, post in schedule for m in minutes)
-
+    print(f"{args.date}: {len(schedule)}R（{schedule[0][1]:%H:%M}〜{schedule[-1][1]:%H:%M}）", flush=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"{args.date}.csv"
-    for due, rid, post, m in jobs:
-        wait = (due - datetime.now()).total_seconds()
-        if wait < -120:
-            continue  # 2分以上過ぎた取得予定は飛ばす（途中から起動した場合）
-        if wait > 0:
-            print(f"  次: {rid} 発走{m}分前（{due:%H:%M}）まで待機")
-            time.sleep(wait)
-        rows, status = fetch_odds(rid)
-        now = datetime.now().isoformat(timespec="seconds")
-        df = pd.DataFrame(rows or [{"race_id": rid}]).assign(minutes_before=m, post_time=f"{post:%H:%M}",
-                                                              fetched_at=now, api_status=status)
-        df.reindex(columns=COLS).to_csv(out, mode="a", index=False, header=not out.exists(), encoding="utf-8")
-        print(f"  {now} {rid} {len(rows)}頭 status={status}")
-        time.sleep(random.uniform(0.5, 1.0))
+
+    if args.now:
+        for rid, post in schedule:
+            rows, status = fetch_odds(rid)
+            save(out, rows, rid, -1, post, status)
+            time.sleep(random.uniform(1.0, 2.0))
+        print("完了:", out)
+        return
+
+    minutes = sorted((int(m) for m in args.minutes.split(",")), reverse=True)
+    done = load_done(out)
+    print(f"取得予定: 1レースあたり {minutes} 分前 / 取得済み {len(done)} 件", flush=True)
+    while True:
+        now = datetime.now()
+        # 予定時刻を過ぎていて、まだ取っていないものを「発走が近い順」に処理する
+        due = [(post, rid, m) for rid, post in schedule for m in minutes
+               if (rid, m) not in done and post - timedelta(minutes=m) <= now <= post + timedelta(seconds=GRACE_SEC)]
+        if not due:
+            if all(now > post + timedelta(seconds=GRACE_SEC) for _, post in schedule):
+                break
+            time.sleep(TICK_SEC)
+            continue
+        for post, rid, m in sorted(due):
+            rows, status = fetch_odds(rid)
+            save(out, rows, rid, m, post, status)
+            done.add((rid, m))
+            time.sleep(random.uniform(1.0, 2.0))
     print("完了:", out)
 
 
