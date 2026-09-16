@@ -29,6 +29,8 @@ DEV_SPLITS = {
 FINAL_SPLIT = {"train": ("2016-01-01", "2020-01-01"), "valid": ("2020-01-01", "2021-01-01"), "report": ("2021-01-01", "2024-01-01")}
 THRESHOLDS = [1.0, 1.1, 1.2, 1.3]
 MIN_BETS = 300
+# 2021〜2023年は展開(trip)の判定で一度使っているため、2候補目は区間を97.5%にする（docs/rebuild_plan.md）
+FINAL_CI_LEVEL = 0.975
 
 
 def base_path(name):
@@ -88,12 +90,12 @@ def run_split(df, name, split, ci_level=0.95):
     return rep.assign(p_a=p_a, p_c=p_c), ll_c - ll_a
 
 
-def pooled_threshold(preds):
+def pooled_threshold(preds, candidate):
     d = preds.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
     starts = RaceGroups(d["race_id"], d["win"]).starts
     rng = np.random.default_rng(0)
     best = None
-    print("  開発2年を合わせた期待値ベース単勝（C+展開）:")
+    print(f"  開発2年を合わせた期待値ベース単勝（C[{candidate}]）:")
     for th in THRESHOLDS:
         sel = (d["p_c"] * d["win_odds"] >= th).to_numpy()
         stake = np.add.reduceat(sel * 1.0, starts)
@@ -129,24 +131,27 @@ def main():
         if args.threshold is None:
             raise SystemExit("--final には登録した --threshold が必要")
         print("*** 最終テスト（2021〜2023年）。この結果を見て特徴量・設定・閾値を変えないこと ***")
-        ref, _ = run_split(markets["base"], "base", FINAL_SPLIT)
-        preds, diff = run_split(markets["trip"], "trip", FINAL_SPLIT)
-        ev_table(ref, ref["p_c"].to_numpy(), "C（参考）", [args.threshold])
-        ev_table(preds, preds["p_c"].to_numpy(), "C+展開", [args.threshold])
-        lo, _ = bootstrap_ci(diff)
+        for name in names[:-1]:
+            ref, _ = run_split(markets[name], name, FINAL_SPLIT, FINAL_CI_LEVEL)
+            ev_table(ref, ref["p_c"].to_numpy(), f"C[{name}]（参考）", [args.threshold])
+        preds, diff = run_split(markets[names[-1]], names[-1], FINAL_SPLIT, FINAL_CI_LEVEL)
+        ev_table(preds, preds["p_c"].to_numpy(), f"C[{names[-1]}]（判定対象）", [args.threshold])
+        lo, _ = bootstrap_ci(diff, level=FINAL_CI_LEVEL)
         sel = preds["p_c"] * preds["win_odds"] >= args.threshold
         roi = (sel * preds["win"] * preds["win_odds"]).sum() / max(sel.sum(), 1) * 100
-        print(f"判定: C+展開 − A の95%区間の下限 {lo:+.4f}（>0）/ 期待値{args.threshold}以上の回収率 {roi:.1f}%（>100%）"
+        print(f"判定: C[{names[-1]}] − A の{FINAL_CI_LEVEL:.1%}区間の下限 {lo:+.4f}（>0 が条件）/ "
+              f"期待値{args.threshold}以上の回収率 {roi:.1f}%（>100% が条件）"
               f" → {'合格' if lo > 0 and roi > 100 else '不合格'}")
         return
 
-    trip_preds = []
+    cand_preds = []
     for year, split in DEV_SPLITS.items():
         print(f"\n=== 開発 報告{year}年 ===")
-        run_split(markets["base"], "base", split)
-        preds, _ = run_split(markets["trip"], "trip", split)
-        trip_preds.append(preds)
-    pooled_threshold(pd.concat(trip_preds, ignore_index=True))
+        for name in names[:-1]:
+            run_split(markets[name], name, split)
+        preds, _ = run_split(markets[names[-1]], names[-1], split)
+        cand_preds.append(preds)
+    pooled_threshold(pd.concat(cand_preds, ignore_index=True), names[-1])
 
 
 if __name__ == "__main__":
