@@ -42,21 +42,27 @@ FIG_BEST = ["h_fig_best_dist", "h_fig_best_surface", "h_fig_best_going", "h_fig_
 DAY_PEOPLE = ["jockey_day_n", "jockey_day_top3", "jockey_day_fig", "trainer_day_top3"]
 SAME_CAMP = ["n_same_trainer", "n_same_owner", "n_same_sire", "same_trainer_jockey_rank"]
 GROWTH = ["h_fig_best_all", "fig_slope", "fig_recent_vs_best", "best_run_dist", "dist_vs_best_dist"]
+# 第7弾（2026-09-17）。対戦相手の強さ、斤量から見た評価、馬場の渋化への適応
+RIVALS = ["rival_beat_best", "rival_beat_last", "rival_lost_mean3", "overperform_mean3"]
+BURDEN2 = ["burden_vs_own_max", "burden_vs_class_mean", "burden_x_class_up", "is_top_jockey"]
+WET = ["going_change", "h_fig_wet_mean", "h_fig_dry_mean", "wet_gap", "wet_gap_x_going"]
 GROUPS = {"馬の詳細実績": HORSE_EXTRA, "人": CONNECTION_EXTRA, "血統": PEDIGREE_EXTRA,
           "レースの形": SHAPE_EXTRA, "当日バイアス": SAMEDAY_EXTRA,
           "人2": CONNECTION2, "前走のレベル": PREV_LEVEL, "馬の条件別2": HORSE2,
           "調教2": OIKIRI2, "枠・展開2": GATE_PACE2, "馬の状態2": CONDITION2,
           "当日補正の指数": DAY_ADJ, "馬×人": HORSE_PERSON, "キャリア・疲労": CAREER,
           "生産者・母父": PEDIGREE3, "開催の進行": MEETING, "ペース適性・負担": PACE_FIT,
-          "自己ベスト": FIG_BEST, "当日の人": DAY_PEOPLE, "同レースの陣営": SAME_CAMP, "指数の伸び・得意距離": GROWTH}
+          "自己ベスト": FIG_BEST, "当日の人": DAY_PEOPLE, "同レースの陣営": SAME_CAMP, "指数の伸び・得意距離": GROWTH,
+          "対戦相手": RIVALS, "斤量から見た評価": BURDEN2, "馬場の渋化": WET}
 # 弾（追加した回）ごとのグループ。feature_lab.py --wave N は「N-1 弾までの全部入り」を基準にする
 WAVES = {1: ["馬の詳細実績", "人", "血統", "レースの形", "当日バイアス"],
          2: ["人2", "前走のレベル", "馬の条件別2"],
          3: ["調教2", "枠・展開2", "馬の状態2"],
          4: ["当日補正の指数", "馬×人", "キャリア・疲労"],
          5: ["生産者・母父", "開催の進行", "ペース適性・負担"],
-         6: ["自己ベスト", "当日の人", "同レースの陣営", "指数の伸び・得意距離"]}
-INACTIVE_WAVES = (5,)   # 第5弾はどちらの指標でも伸びなかったので外す（コードは残す。docs/rebuild_plan.md）
+         6: ["自己ベスト", "当日の人", "同レースの陣営", "指数の伸び・得意距離"],
+         7: ["対戦相手", "斤量から見た評価", "馬場の渋化"]}
+INACTIVE_WAVES = (5, 6, 7)   # 第5〜7弾はどちらの指標でも伸びなかったので外す（コードは残す。docs/rebuild_plan.md）
 ACTIVE_GROUPS = [n for w in sorted(WAVES) if w not in INACTIVE_WAVES for n in WAVES[w]]
 EXTRA_FEATURES = [c for n in ACTIVE_GROUPS for c in GROUPS[n]]
 # 同じ日の「先に終わったレース」の結果を使う列（当日を丸ごと消すリークテストの対象外）
@@ -440,6 +446,57 @@ def _growth(df, ev, out):
     out["dist_vs_best_dist"] = df["distance"] - s["best_run_dist"]
 
 
+def _rivals(df, out):
+    """過去走で「自分が先着した相手の強さ」と「自分に先着した相手の弱さ」。
+    強さは各レースの発走前に分かっていた指数（fig_mean3）で測る"""
+    h = df[df["is_hist"] & df["finish_pos"].notna()].sort_values(["race_id", "finish_pos"], kind="stable")
+    rid, fig = h["race_id"], h["fig_mean3"]
+    lost_min = fig.groupby(rid, sort=False).cummin().groupby(rid, sort=False).shift()   # 自分より上位で最も弱い馬
+    rev = h.index[::-1]
+    beat_max = (fig.loc[rev].groupby(rid.loc[rev], sort=False).cummax()
+                .groupby(rid.loc[rev], sort=False).shift()).reindex(h.index)            # 自分より下位で最も強い馬
+    n = rid.map(rid.value_counts()).astype(float)
+    fig_rank = fig.groupby(rid, sort=False).rank(ascending=False, method="first")
+    fin_rank = h["finish_pos"].groupby(rid, sort=False).rank(method="first")
+    over = (fig_rank - fin_rank) / (n - 1).clip(lower=1)      # 指数の順位より何番分よく走ったか
+
+    hh = h.assign(_beat=beat_max, _lost=lost_min, _over=over).sort_values(["horse_id", "race_date"], kind="stable")
+    out["rival_beat_best"] = _cummax_before(hh, ["horse_id"], df, "_beat")
+    g = hh.groupby("horse_id", sort=False)
+    state = hh[["horse_id", "race_date"]].copy()
+    state["rival_beat_last"] = hh["_beat"]
+    state["rival_lost_mean3"] = g["_lost"].rolling(3, min_periods=1).mean().reset_index(level=0, drop=True)
+    state["overperform_mean3"] = g["_over"].rolling(3, min_periods=1).mean().reset_index(level=0, drop=True)
+    s = ft.asof_before(state, ["horse_id"], df)
+    for c in ["rival_beat_last", "rival_lost_mean3", "overperform_mean3"]:
+        out[c] = s[c]
+
+
+def _burden2(df, ev, out):
+    """斤量は調教師・ハンデ次第で上がる（＝評価が上がっている証拠）"""
+    out["burden_vs_own_max"] = df["burden"] - _cummax_before(ev, ["horse_id"], df, "burden")
+    e = ev.assign(b_sum=ev["burden"].fillna(0.0), b_n=ev["burden"].notna().astype(float))
+    s = ft.cum_before(e, ["class_ord", "sex"], df, ["b_sum", "b_n"])   # その日より前の同じクラス・性の平均斤量
+    out["burden_vs_class_mean"] = df["burden"] - s["b_sum"] / s["b_n"].replace(0, np.nan)
+    out["burden_x_class_up"] = df["burden_change"] * df["class_change"]
+    top = df["jockey_top3"] >= df.groupby("race_id")["jockey_top3"].transform("max")
+    out["is_top_jockey"] = top.astype(float)        # そのレースで最も複勝率の高い騎手か
+
+
+def _wet(df, ev, out):
+    """馬場が渋ったときに走れるか（良/重の指数の差）"""
+    out["going_change"] = df["going_ord"] - ft.asof_before(
+        ev.sort_values(["horse_id", "race_date"])[["horse_id", "race_date", "going_ord"]]
+        .rename(columns={"going_ord": "_g"}), ["horse_id"], df)["_g"]
+    wet = (ev["going_ord"] >= 2).astype(float)
+    s_wet = ft.cum_before(ev.assign(_w=wet), ["horse_id", "_w"], df.assign(_w=1.0), ["fig_sum", "fig_n"])
+    s_dry = ft.cum_before(ev.assign(_w=wet), ["horse_id", "_w"], df.assign(_w=0.0), ["fig_sum", "fig_n"])
+    out["h_fig_wet_mean"] = s_wet["fig_sum"] / s_wet["fig_n"].replace(0, np.nan)
+    out["h_fig_dry_mean"] = s_dry["fig_sum"] / s_dry["fig_n"].replace(0, np.nan)
+    out["wet_gap"] = out["h_fig_wet_mean"] - out["h_fig_dry_mean"]
+    out["wet_gap_x_going"] = out["wet_gap"] * (df["going_ord"] >= 2).astype(float)
+
+
 def build(df):
     out = pd.DataFrame(index=df.index)
     hist = df[df["is_hist"]]
@@ -465,4 +522,7 @@ def build(df):
     _day_people(df, out)
     _same_camp(df, out)
     _growth(df, ev, out)
+    _rivals(df, out)
+    _burden2(df, ev, out)
+    _wet(df, ev, out)
     return out[EXTRA_FEATURES]
