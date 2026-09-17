@@ -41,7 +41,7 @@ needs_data = pytest.mark.skipif(not table_path("runners").exists(), reason="data
 WINDOW = ("2023-09-01", "2024-01-31")
 CUTOFF = pd.Timestamp("2023-12-24")   # 開催日
 # 当日バイアスは「同じ日の先に終わったレース」を使うため、当日を丸ごと消すテストの対象外にする
-NOT_SAMEDAY = [c for c in ft.FEATURES_TRIP + fx.EXTRA_FEATURES if c not in fx.SAMEDAY_EXTRA]
+NOT_SAMEDAY = [c for c in ft.FEATURES_TRIP + fx.EXTRA_FEATURES if c not in fx.SAMEDAY_DEPENDENT]
 
 
 @pytest.fixture(scope="module")

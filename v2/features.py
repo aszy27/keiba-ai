@@ -99,7 +99,9 @@ def base_frame(t):
                             errors="ignore")
     df = t["runners"][t["runners"]["status"] != "scratched"].merge(races, on="race_id", how="left",
                                                                      validate="many_to_one")
-    df = df.merge(t["horses"][["horse_id", "sire_id", "dam_id", "owner"]], on="horse_id", how="left")
+    hs = t["horses"].drop_duplicates("horse_id")
+    df = df.merge(hs[["horse_id", "sire_id", "dam_id", "owner", "breeder"]], on="horse_id", how="left")
+    df["bms_id"] = df["dam_id"].map(hs.set_index("horse_id")["sire_id"])   # 母父（母自身が horses にある馬だけ分かる）
     df = df.merge(t["courses"], on=["place", "surface"], how="left")
     tr = t["training"].assign(oikiri=lambda x: x["oikiri_rank"].map(OIKIRI_ORDER).astype(float))
     df = df.merge(tr[["race_id", "horse_id", "oikiri"]], on=["race_id", "horse_id"], how="left")

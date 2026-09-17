@@ -32,12 +32,26 @@ CONDITION2 = ["weight_vs_own_mean", "weight_vs_best", "h_fig_interval_mean", "is
 DAY_ADJ = ["fig_adj_last", "fig_adj_mean3", "fig_adj_best5", "h_fig_adj_mean"]
 HORSE_PERSON = ["horse_jockey_n", "horse_jockey_top3", "horse_jockey_fig_mean", "trainer_class_top3"]
 CAREER = ["runs_90d", "interval_sum3", "career_days", "h_fig_class_mean"]
+# 第5弾（2026-09-17）。ここまで使っていなかった生データ（生産者・母父・開催回/日目・発走時刻・ラップの速さ）から作る
+PEDIGREE3 = ["breeder_top3", "breeder_n", "breeder_surface_top3", "breeder_fig_mean", "bms_top3", "bms_fig_mean"]
+MEETING = ["kai_num", "day_num", "meeting_gate_bias", "meeting_style_bias", "day_x_gate", "day_x_style"]
+PACE_FIT = ["h_fig_slow_mean", "h_fig_fast_mean", "pace_fit", "h_l3_mean", "burden_ratio", "burden_ratio_vs_field",
+            "post_hour"]
 GROUPS = {"馬の詳細実績": HORSE_EXTRA, "人": CONNECTION_EXTRA, "血統": PEDIGREE_EXTRA,
           "レースの形": SHAPE_EXTRA, "当日バイアス": SAMEDAY_EXTRA,
           "人2": CONNECTION2, "前走のレベル": PREV_LEVEL, "馬の条件別2": HORSE2,
           "調教2": OIKIRI2, "枠・展開2": GATE_PACE2, "馬の状態2": CONDITION2,
-          "当日補正の指数": DAY_ADJ, "馬×人": HORSE_PERSON, "キャリア・疲労": CAREER}
+          "当日補正の指数": DAY_ADJ, "馬×人": HORSE_PERSON, "キャリア・疲労": CAREER,
+          "生産者・母父": PEDIGREE3, "開催の進行": MEETING, "ペース適性・負担": PACE_FIT}
+# 弾（追加した回）ごとのグループ。feature_lab.py --wave N は「N-1 弾までの全部入り」を基準にする
+WAVES = {1: ["馬の詳細実績", "人", "血統", "レースの形", "当日バイアス"],
+         2: ["人2", "前走のレベル", "馬の条件別2"],
+         3: ["調教2", "枠・展開2", "馬の状態2"],
+         4: ["当日補正の指数", "馬×人", "キャリア・疲労"],
+         5: ["生産者・母父", "開催の進行", "ペース適性・負担"]}
 EXTRA_FEATURES = [c for cols in GROUPS.values() for c in cols]
+# 同じ日の「先に終わったレース」の結果を使う列（当日を丸ごと消すリークテストの対象外）
+SAMEDAY_DEPENDENT = SAMEDAY_EXTRA + ["meeting_gate_bias", "meeting_style_bias"]
 LAYOFF_DAYS = 60
 
 
@@ -300,6 +314,66 @@ def _career(df, ev, out):
     out["h_fig_class_mean"] = s["fig_sum"] / s["fig_n"].replace(0, np.nan)
 
 
+def _pedigree3(df, ev, out):
+    """生産者（2,633件・欠損ほぼ0）と母父（母自身が horses にある29%だけ）"""
+    s = ft.cum_before(ev, ["breeder"], df, ["n", "top3", "fig_sum", "fig_n"])
+    out["breeder_top3"], out["breeder_n"] = _shrunk(s, 20), s["n"]
+    out["breeder_fig_mean"] = s["fig_sum"] / s["fig_n"].replace(0, np.nan)
+    s = ft.cum_before(ev, ["breeder", "surface"], df, ["n", "top3"])
+    out["breeder_surface_top3"] = _shrunk(s, 20)
+
+    has_bms = df["bms_id"].notna()      # 母父が分からない馬は「0件」と区別できるよう NaN にする
+    s = ft.cum_before(ev, ["bms_id"], df, ["n", "top3", "fig_sum", "fig_n"])
+    out["bms_top3"] = _shrunk(s, 50).where(has_bms)
+    out["bms_fig_mean"] = (s["fig_sum"] / s["fig_n"].replace(0, np.nan)).where(has_bms)
+
+
+def _meeting(df, out):
+    """開催（年・場・回）が進むほど内側が荒れる。同じ開催で先に終わったレースの勝ち馬の枠・1角位置の偏り。
+    使うのは同じ開催の過去の日と、同じ日の先に終わったレースだけ（買う時点で分かる）"""
+    races = df.drop_duplicates("race_id")[["race_id", "race_date", "place", "surface", "kai", "race_number"]].copy()
+    win = df[(df["status"] == "finished") & (df["finish_pos"] == 1)]
+    races = races.join(win.groupby("race_id")[["gate_rel", "corner_rel"]].mean(), on="race_id")
+    races["_year"] = races["race_date"].dt.year          # 「回」は年ごとに振り直されるため年を含める
+    races = races.sort_values(["race_date", "race_number"])
+    g = races.groupby(["_year", "place", "kai", "surface"], sort=False)
+    for c in ["gate_rel", "corner_rel"]:
+        races[f"m_{c}"] = g[c].transform(lambda x: x.shift().expanding().mean())
+
+    ev = races[races["gate_rel"].notna()].assign(n=1.0)
+    base = ft.cum_before(ev, ["place", "surface"], races, ["gate_rel", "corner_rel", "n"])
+    denom = base["n"].replace(0, np.nan)
+    races["meeting_gate_bias"] = races["m_gate_rel"] - base["gate_rel"] / denom
+    races["meeting_style_bias"] = races["m_corner_rel"] - base["corner_rel"] / denom
+
+    r = races.set_index("race_id")
+    for c in ["meeting_gate_bias", "meeting_style_bias"]:
+        out[c] = df["race_id"].map(r[c])
+    out["kai_num"], out["day_num"] = df["kai"].astype(float), df["day"].astype(float)
+    out["day_x_gate"] = (df["gate_rel"] - 0.5) * out["day_num"]
+    out["day_x_style"] = (df["corner_rel_mean5"] - 0.5) * out["day_num"]
+
+
+def _pace_fit(df, ev, out):
+    """流れの速さ別の自分の指数と、そのコースの平均ペースとの相性。負担率（斤量÷馬体重）と発走時刻も"""
+    evp = ev[ev["pace_rel"].notna()]
+    slow = (evp["pace_rel"] > 0).astype(float)          # 正なら前半が遅い＝スロー寄り
+    s_slow = ft.cum_before(evp.assign(_p=slow), ["horse_id", "_p"], df.assign(_p=1.0), ["fig_sum", "fig_n"])
+    s_fast = ft.cum_before(evp.assign(_p=slow), ["horse_id", "_p"], df.assign(_p=0.0), ["fig_sum", "fig_n"])
+    out["h_fig_slow_mean"] = s_slow["fig_sum"] / s_slow["fig_n"].replace(0, np.nan)
+    out["h_fig_fast_mean"] = s_fast["fig_sum"] / s_fast["fig_n"].replace(0, np.nan)
+    # スローになりやすいコース（course_pace_mean が大きい）ほど、スロー向きの馬が有利
+    out["pace_fit"] = (out["h_fig_slow_mean"] - out["h_fig_fast_mean"]) * out["course_pace_mean"]
+
+    e = ev.assign(l3_sum=ev["l3_rel"].fillna(0.0), l3_n=ev["l3_rel"].notna().astype(float))
+    s = ft.cum_before(e, ["horse_id"], df, ["l3_sum", "l3_n"])
+    out["h_l3_mean"] = s["l3_sum"] / s["l3_n"].replace(0, np.nan)
+
+    out["burden_ratio"] = df["burden"] / df["weight"]
+    out["burden_ratio_vs_field"] = out["burden_ratio"] - out["burden_ratio"].groupby(df["race_id"]).transform("mean")
+    out["post_hour"] = pd.to_numeric(df["post_time"].astype(object).str.slice(0, 2), errors="coerce")
+
+
 def build(df):
     out = pd.DataFrame(index=df.index)
     hist = df[df["is_hist"]]
@@ -318,4 +392,7 @@ def build(df):
     _day_adjusted(df, out)
     _horse_person(df, ev, out)
     _career(df, ev, out)
+    _pedigree3(df, ev, out)
+    _meeting(df, out)
+    _pace_fit(df, ev, out)          # course_pace_mean を使うので _gate_pace2 の後
     return out[EXTRA_FEATURES]
