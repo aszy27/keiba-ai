@@ -37,21 +37,30 @@ PEDIGREE3 = ["breeder_top3", "breeder_n", "breeder_surface_top3", "breeder_fig_m
 MEETING = ["kai_num", "day_num", "meeting_gate_bias", "meeting_style_bias", "day_x_gate", "day_x_style"]
 PACE_FIT = ["h_fig_slow_mean", "h_fig_fast_mean", "pace_fit", "h_l3_mean", "burden_ratio", "burden_ratio_vs_field",
             "post_hour"]
+# 第6弾（2026-09-17）。平均ではなく最高値、当日の人の勢い、同じレースの陣営、指数の伸びと得意距離
+FIG_BEST = ["h_fig_best_dist", "h_fig_best_surface", "h_fig_best_going", "h_fig_best_course", "h_fig_win_mean"]
+DAY_PEOPLE = ["jockey_day_n", "jockey_day_top3", "jockey_day_fig", "trainer_day_top3"]
+SAME_CAMP = ["n_same_trainer", "n_same_owner", "n_same_sire", "same_trainer_jockey_rank"]
+GROWTH = ["h_fig_best_all", "fig_slope", "fig_recent_vs_best", "best_run_dist", "dist_vs_best_dist"]
 GROUPS = {"馬の詳細実績": HORSE_EXTRA, "人": CONNECTION_EXTRA, "血統": PEDIGREE_EXTRA,
           "レースの形": SHAPE_EXTRA, "当日バイアス": SAMEDAY_EXTRA,
           "人2": CONNECTION2, "前走のレベル": PREV_LEVEL, "馬の条件別2": HORSE2,
           "調教2": OIKIRI2, "枠・展開2": GATE_PACE2, "馬の状態2": CONDITION2,
           "当日補正の指数": DAY_ADJ, "馬×人": HORSE_PERSON, "キャリア・疲労": CAREER,
-          "生産者・母父": PEDIGREE3, "開催の進行": MEETING, "ペース適性・負担": PACE_FIT}
+          "生産者・母父": PEDIGREE3, "開催の進行": MEETING, "ペース適性・負担": PACE_FIT,
+          "自己ベスト": FIG_BEST, "当日の人": DAY_PEOPLE, "同レースの陣営": SAME_CAMP, "指数の伸び・得意距離": GROWTH}
 # 弾（追加した回）ごとのグループ。feature_lab.py --wave N は「N-1 弾までの全部入り」を基準にする
 WAVES = {1: ["馬の詳細実績", "人", "血統", "レースの形", "当日バイアス"],
          2: ["人2", "前走のレベル", "馬の条件別2"],
          3: ["調教2", "枠・展開2", "馬の状態2"],
          4: ["当日補正の指数", "馬×人", "キャリア・疲労"],
-         5: ["生産者・母父", "開催の進行", "ペース適性・負担"]}
-EXTRA_FEATURES = [c for cols in GROUPS.values() for c in cols]
+         5: ["生産者・母父", "開催の進行", "ペース適性・負担"],
+         6: ["自己ベスト", "当日の人", "同レースの陣営", "指数の伸び・得意距離"]}
+INACTIVE_WAVES = (5,)   # 第5弾はどちらの指標でも伸びなかったので外す（コードは残す。docs/rebuild_plan.md）
+ACTIVE_GROUPS = [n for w in sorted(WAVES) if w not in INACTIVE_WAVES for n in WAVES[w]]
+EXTRA_FEATURES = [c for n in ACTIVE_GROUPS for c in GROUPS[n]]
 # 同じ日の「先に終わったレース」の結果を使う列（当日を丸ごと消すリークテストの対象外）
-SAMEDAY_DEPENDENT = SAMEDAY_EXTRA + ["meeting_gate_bias", "meeting_style_bias"]
+SAMEDAY_DEPENDENT = SAMEDAY_EXTRA + ["meeting_gate_bias", "meeting_style_bias"] + DAY_PEOPLE
 LAYOFF_DAYS = 60
 
 
@@ -374,6 +383,63 @@ def _pace_fit(df, ev, out):
     out["post_hour"] = pd.to_numeric(df["post_time"].astype(object).str.slice(0, 2), errors="coerce")
 
 
+def _cummax_before(ev, keys, query, col):
+    """keys ごとの col の、query の日付より前の最大値"""
+    h = ev[ev[col].notna()].sort_values(keys + ["race_date"])
+    state = h[keys + ["race_date"]].copy()
+    state["_m"] = h.groupby(keys, sort=False, observed=True)[col].cummax()
+    return ft.asof_before(state, keys, query)["_m"]
+
+
+def _fig_best(df, ev, out):
+    """条件ごとの自己ベスト指数（これまでは平均だけだった）と、勝ったときの指数"""
+    for name, keys in [("h_fig_best_dist", ["horse_id", "dist_bucket"]), ("h_fig_best_surface", ["horse_id", "surface"]),
+                       ("h_fig_best_going", ["horse_id", "going"]), ("h_fig_best_course", ["horse_id", "place", "surface"])]:
+        out[name] = _cummax_before(ev, keys, df, "fig")
+    w = ev[ev["win"] == 1]
+    s = ft.cum_before(w, ["horse_id"], df, ["fig_sum", "fig_n"])
+    out["h_fig_win_mean"] = s["fig_sum"] / s["fig_n"].replace(0, np.nan)
+
+
+def _day_people(df, out):
+    """同じ日に自分より前に発走したレースでの、その騎手・厩舎の成績（当日の勢い）"""
+    start = pd.to_datetime(df["race_date"].dt.strftime("%Y-%m-%d") + " " + df["post_time"].astype(object).fillna("12:00"),
+                           errors="coerce")
+    d = df.assign(_start=start, _day=df["race_date"])
+    ev = d[d["is_hist"]].assign(n=1.0, fig_sum=lambda x: x["fig"].fillna(0.0), fig_n=lambda x: x["fig"].notna().astype(float))
+    s = ft.cum_before(ev, ["jockey_id", "_day"], d, ["n", "top3", "fig_sum", "fig_n"], date_col="_start")
+    out["jockey_day_n"] = s["n"]
+    out["jockey_day_top3"] = (s["top3"] / s["n"]).where(s["n"] > 0)
+    out["jockey_day_fig"] = s["fig_sum"] / s["fig_n"].replace(0, np.nan)
+    s = ft.cum_before(ev, ["trainer_id", "_day"], d, ["n", "top3"], date_col="_start")
+    out["trainer_day_top3"] = (s["top3"] / s["n"]).where(s["n"] > 0)
+
+
+def _same_camp(df, out):
+    """同じレースに同じ厩舎・馬主・種牡馬の馬が何頭いるか（勝負度合いの目安）"""
+    for name, col in [("n_same_trainer", "trainer_id"), ("n_same_owner", "owner"), ("n_same_sire", "sire_id")]:
+        out[name] = df.groupby(["race_id", col], observed=True)["horse_id"].transform("size").astype(float)
+    rank = df.groupby(["race_id", "trainer_id"], observed=True)["jockey_top3"].rank(ascending=False, method="min")
+    out["same_trainer_jockey_rank"] = rank.where(out["n_same_trainer"] > 1)   # 同厩舎の中で自分の騎手が何番手か
+
+
+def _growth(df, ev, out):
+    """指数の伸び（直近2走と直近5走の差）と、過去にいちばん走れた距離"""
+    out["h_fig_best_all"] = _cummax_before(ev, ["horse_id"], df, "fig")
+    h = ev[ev["fig"].notna()].sort_values(["horse_id", "race_date"])
+    g = h.groupby("horse_id", sort=False)
+    state = h[["horse_id", "race_date"]].copy()
+    mean2 = g["fig"].rolling(2, min_periods=1).mean().reset_index(level=0, drop=True)
+    mean5 = g["fig"].rolling(5, min_periods=2).mean().reset_index(level=0, drop=True)
+    state["fig_slope"] = mean2 - mean5
+    best = g["fig"].cummax()
+    state["best_run_dist"] = h["distance"].where(h["fig"] >= best).groupby(h["horse_id"], sort=False).ffill()
+    s = ft.asof_before(state, ["horse_id"], df)
+    out["fig_slope"], out["best_run_dist"] = s["fig_slope"], s["best_run_dist"]
+    out["fig_recent_vs_best"] = df["fig_mean3"] - out["h_fig_best_all"]
+    out["dist_vs_best_dist"] = df["distance"] - s["best_run_dist"]
+
+
 def build(df):
     out = pd.DataFrame(index=df.index)
     hist = df[df["is_hist"]]
@@ -395,4 +461,8 @@ def build(df):
     _pedigree3(df, ev, out)
     _meeting(df, out)
     _pace_fit(df, ev, out)          # course_pace_mean を使うので _gate_pace2 の後
+    _fig_best(df, ev, out)
+    _day_people(df, out)
+    _same_camp(df, out)
+    _growth(df, ev, out)
     return out[EXTRA_FEATURES]

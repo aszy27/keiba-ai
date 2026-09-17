@@ -22,7 +22,8 @@ def feature_sets(wave=None):
     """wave を指定すると、基準を「その1つ前の弾までの全部入り」にして、その弾のグループだけを足す"""
     base, groups = ft.FEATURES_TRIP, fx.GROUPS
     if wave is not None:
-        base = base + [c for w in sorted(fx.WAVES) if w < wave for n in fx.WAVES[w] for c in fx.GROUPS[n]]
+        base = base + [c for w in sorted(fx.WAVES) if w < wave and w not in fx.INACTIVE_WAVES
+                       for n in fx.WAVES[w] for c in fx.GROUPS[n]]
         groups = {n: fx.GROUPS[n] for n in fx.WAVES[wave]}
     sets = {f"基準（{len(base)}列）": base}
     for name, cols in groups.items():

@@ -96,11 +96,16 @@ def test_same_day_results_do_not_change_features(tables, full):
 
 @needs_data
 def test_later_races_on_the_same_day_do_not_change_features(tables, full):
-    """当日バイアスを含めて、同じ日の「後のレース」の結果は使っていないこと"""
+    """当日バイアスを含めて、同じ日の「後のレース」の結果は使っていないこと。
+    騎手・厩舎の当日成績は場をまたいで数えるため、「後」は場ごとのレース番号ではなく発走時刻で区切る
+    （どこかの場の最終レースが、別の場の最終でないレースより先に発走することがあるため）"""
     day = tables["races"][tables["races"]["race_date"] == CUTOFF]
-    last = day.loc[day.groupby(["place", "surface"])["race_number"].idxmax(), "race_id"]
-    earlier = day.loc[~day["race_id"].isin(last), "race_id"]
-    blanked = ft.build_features(_blank(tables, last))
+    last = day.loc[day.groupby(["place", "surface"])["race_number"].idxmax()]
+    cut_time = last["post_time"].min()          # いちばん早く終わる場の最終レースの発走時刻
+    later = day.loc[day["post_time"] >= cut_time, "race_id"]
+    earlier = day.loc[day["post_time"] < cut_time, "race_id"]
+    assert len(later) >= len(last) and len(earlier) > 0
+    blanked = ft.build_features(_blank(tables, later))
     _same(blanked[blanked["race_id"].isin(earlier)], full[full["race_id"].isin(earlier)])
 
 
