@@ -36,25 +36,32 @@ def model_preds(df):
     return preds
 
 
-def _triple_probs(p):
-    """P[i, j, k] = 1着i・2着j・3着k の確率（Plackett-Luce）"""
+def _triple_probs(p, lam=1.0):
+    """P[i, j, k] = 1着i・2着j・3着k の確率。
+    lam < 1 は「1着でない馬が2着・3着に来る力」を割り引く補正（Henery/Stern 型）。
+    ハービル式（lam=1）は強い馬が2着・3着に来る確率を過大評価することが知られている"""
     n = len(p)
-    pi, pj, pk = p[:, None, None], p[None, :, None], p[None, None, :]
-    prob = pi * (pj / np.maximum(1 - pi, 1e-9)) * (pk / np.maximum(1 - pi - pj, 1e-9))
+    q = p ** lam
+    total = q.sum()
+    pi = p[:, None, None]
+    d1 = np.maximum(total - q[:, None, None], 1e-12)
+    d2 = np.maximum(total - q[:, None, None] - q[None, :, None], 1e-12)
+    prob = pi * (q[None, :, None] / d1) * (q[None, None, :] / d2)
     idx = np.arange(n)
     prob[idx, idx, :] = prob[idx, :, idx] = prob[:, idx, idx] = 0.0   # 同じ馬は使えない
     return prob
 
 
-def race_combos(numbers, p, kind):
+def race_combos(numbers, p, kind, lam=1.0):
     """組み合わせの文字列と確率を返す"""
     n = len(p)
     if kind == "place":
-        prob = _triple_probs(p)
+        prob = _triple_probs(p, lam)
         top3 = prob.sum(axis=(1, 2)) + prob.sum(axis=(0, 2)) + prob.sum(axis=(0, 1))
         return [f"{int(numbers[i]):02d}" for i in range(n)], top3
     if kind == "pair":      # 馬連（順不同の上位2頭）
-        pair = p[:, None] * (p[None, :] / np.maximum(1 - p[:, None], 1e-9))
+        q = p ** lam
+        pair = p[:, None] * (q[None, :] / np.maximum(q.sum() - q[:, None], 1e-12))
         np.fill_diagonal(pair, 0.0)
         combos, probs = [], []
         for i in range(n):
@@ -62,7 +69,7 @@ def race_combos(numbers, p, kind):
                 combos.append(f"{int(numbers[i]):02d}{int(numbers[j]):02d}")
                 probs.append(pair[i, j] + pair[j, i])
         return combos, np.array(probs)
-    prob = _triple_probs(p)
+    prob = _triple_probs(p, lam)
     if kind == "pair3":     # ワイド（2頭とも3着以内）
         combos, probs = [], []
         for i in range(n):
@@ -109,7 +116,7 @@ def winning_combo(g, kind):
     return f"{a:02d}{b:02d}{c:02d}"
 
 
-def build_bets(preds, bet, odds_map, col="p_c"):
+def build_bets(preds, bet, odds_map, col="p_c", lam=1.0):
     """レースごとに（組み合わせ, 確率, オッズ, 当たりか）を作る"""
     kind = "place" if bet == "place" else BETS[bet][1]
     rows = []
@@ -117,7 +124,7 @@ def build_bets(preds, bet, odds_map, col="p_c"):
         g = g.sort_values("horse_number")
         p = g[col].to_numpy()
         p = p / p.sum()
-        combos, probs = race_combos(g["horse_number"].to_numpy(), p, kind)
+        combos, probs = race_combos(g["horse_number"].to_numpy(), p, kind, lam)
         odds = odds_map.get(rid)
         if odds is None:
             continue
@@ -174,6 +181,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bets", default="place")
     ap.add_argument("--years", default="2019,2020")
+    ap.add_argument("--lam", type=float, default=1.0, help="2着・3着の力を割り引く補正（1.0 はハービル式）")
     args = ap.parse_args()
     years = [int(y) for y in args.years.split(",")]
     preds = model_preds(eligible(pd.read_parquet(table_path("features"))))
@@ -187,7 +195,7 @@ def main():
             continue
         target = preds[preds["race_id"].isin(odds_map)]
         for col, label in [("p_c", "モデル"), ("p_a", "オッズのみ（対照）")]:
-            bets = build_bets(target, bet, odds_map, col)
+            bets = build_bets(target, bet, odds_map, col, args.lam)
             if len(bets):
                 report(bets, bet, label)
 
