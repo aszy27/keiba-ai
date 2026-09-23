@@ -54,3 +54,6 @@ result/
 .env
 .venv/
 virenv/
+
+# 実行ログ
+logs/
