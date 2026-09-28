@@ -81,13 +81,14 @@ train/serving skew（学習時と推論時の分布ズレ）を継続的に潰�
 * 単勝・複勝は列位置が変わらないため元から正しく、学習は払戻データを使わないためモデル自体への影響はありません。
 
 ### 2. 「偽レース」の混入
-keibascraper が、あるレースIDに対して**同じ開催日の別レースの出走馬・着順**を返すことがありました（2026年で6レース）。
+db.netkeiba の結果ページが、あるレースIDに対して**同じ開催日の別レースの出走馬・着順**を返すことがありました（2026年で6レース）。
 同じ馬が1日に6回走った記録になり、前走成績・出走間隔が壊れます。
-同じ日に出走馬の組み合わせが完全一致するレースを検出して除外し、`rescrape_races.py` で取り直します。
+結果の取得時（`python -m scrape results`）に、同じ日に出走馬の組み合わせが完全一致するレースは保存せずに警告し、
+`python -m scrape rescrape` で race.netkeiba の結果ページから取り直します。
 
 ### 3. レース情報の欠損
 2026年8月以降の中京・9月の全レースなど181レースで、芝ダ・距離・天候・馬場が空欄でした。
-コース特徴量やコース別成績に直接効くため、`repair_race_info.py` で結果ページから補完しています。
+コース特徴量やコース別成績に直接効くため、`python -m scrape repair` で結果ページから補完しています。
 
 ### 4. 騎手・調教師IDの書式ゆれ
 race_data は2014〜2025年が `1170`、2012〜2013年と2026年が `01170` と年によって書式が異なり、
@@ -151,10 +152,16 @@ keiba/
 │   ├── inference.py            # 高速・防弾仕様のDL（Transformer/DAE）推論エンジン
 │   └── models_nn.py            # PyTorchニューラルネットワーク定義（Transformer/DAE）
 │
-├── scrape/                     # スクレイピングモジュール群
-│   ├── scrape_horse_ped.py     # ネット競馬DBから血統情報のクローリング
-│   ├── scrape_main_data.py     # 指定した年のレース結果（出馬表）を自動フォルダ振分
-│   └── scrape_other_data.py    # 既存CSVから自動全スキャンする拡張データ（ラップ・払戻・追い切り）収集
+├── scrape/                     # スクレイピング（入口は python -m scrape）
+│   ├── __main__.py             # コマンドの入口（weekly / results / pedigree / extras / odds / repair / rescrape など）
+│   ├── common.py               # 保存先・通信・ブロック検知などの共通処理
+│   ├── results.py              # レース結果（旧 keibascraper と同じ出力の自前パーサ）
+│   ├── pedigree.py             # 血統（父・母）
+│   ├── extras.py               # ラップ・払戻・追い切り・生産者
+│   ├── odds.py                 # 確定オッズ（単勝・複勝／組み合わせ券）
+│   ├── repair.py               # 芝ダ・距離・天候・馬場が欠損したレースを結果ページから補完
+│   ├── rescrape.py             # 抜けている／別レースのコピーになっているレースを直接取り直す
+│   └── tests/                  # 結果パーサの回帰テスト
 │
 ├── data/                       # 【Git管理外】各種CSVデータ・マスタ・一時キャッシュ
 │   ├── train/                  # 2012年〜2023年のレース結果（学習用）
@@ -172,8 +179,6 @@ keiba/
 ├── evaluate_main.py            # 過去の払戻金データを用いたリアル収支シミュレーター
 ├── evaluate_dump.py            # 上記＋レース単位の結果保存と診断（高配当依存度・ばらつき・実戦との一致率）
 ├── evaluate_tickets.py         # 券種別（単勝〜3連単）の回収率を自信度の閾値ごとに測定
-├── repair_race_info.py         # 芝ダ・距離・天候・馬場が欠損したレースを結果ページから補完
-├── rescrape_races.py           # 抜けている／別レースのコピーになっているレースを直接取り直す
 └── predict_main.py             # 最新の出馬表・追い切りを自動収集して当日の買い目を予測
 ```
 
@@ -200,27 +205,27 @@ AIの学習ソースとなるレースデータ、およびコースと血統の
    * 実行すると、JRA全10場の「直線距離」「高低差」「急坂の有無」を定義した `data/master_course_data.csv` が自動生成されます。
 
 2. **ベースレースデータの取得**
-   `scrape/scrape_main_data.py` を開き、設定エリアの `TARGET_YEAR` に取得したい年（例: `2023` や `2026` など）を指定して実行します。
    ```bash
-   python scrape/scrape_main_data.py
+   python -m scrape results --year 2026
    ```
-   * 指定した年数に応じて、自動的に `data/train/`、`data/val/`、`data/test/` へフォルダが振り分けられ保存されます。
+   * 既存の `race_data_YYYY.csv` があればその場所（`data/train/`・`data/val/`・`data/test/`）に追記し、無ければ年に応じて振り分けます。
+   * 毎週の取得（下の3〜5とオッズを含む）は `python -m scrape weekly` でまとめて実行できます。
 
 3. **血統情報の取得**
    ```bash
-   python scrape/scrape_horse_ped.py
+   python -m scrape pedigree
    ```
    * 収集した全レースデータから登場するすべてのユニークな馬IDを自動抽出し、ネット競馬データベースから「父」「母」のIDを巡回取得して `data/master_horse_data.csv` を作成・追記します。
 
 4. **拡張データ（ラップ・追い切り・払戻金）の取得**
    ```bash
-   python scrape/scrape_other_data.py
+   python -m scrape extras
    ```
    * 存在するすべての `race_data_*.csv` を全自動でスキャンし、まだ取得していない「ラップタイム」「当日の追い切り評価」「レースの払戻金」を差分検知してステルスモードで自動収集・同期します。
 
 5. **データの不具合チェック**
    ```bash
-   python repair_race_info.py --dry-run
+   python -m scrape repair --dry-run
    ```
    * レース情報（芝ダ・距離・天候・馬場）の欠損や、別レースのコピーになっている「偽レース」を検出します。見つかった場合は `--dry-run` を外して補完・削除します（詳細は「データ品質と検証」）。
 

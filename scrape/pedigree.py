@@ -1,29 +1,17 @@
-# scrape/scrape_horse_ped.py
-import pandas as pd
-import time
+# scrape/pedigree.py
+# race_data_*.csv に出てくる馬の父・母を db.netkeiba の血統ページから取得し、data/master_horse_data.csv に追記する。
+# 使い方: python -m scrape pedigree
 import os
-import sys
-import glob
 import random
-import requests
-from bs4 import BeautifulSoup
 import re
-import warnings
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from pathlib import Path
+import sys
+import time
 
-warnings.simplefilter('ignore')
+import pandas as pd
+from bs4 import BeautifulSoup
 
-# ==========================================
-# ★パスの自動動的解決 (サブディレクトリ移動対策)
-# ==========================================
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
+from scrape.common import BLOCK_WORDS, DATA_DIR, USER_AGENTS, create_session as _base_session, race_data_files
 
-# ==========================================
-# ★設定エリア
-# ==========================================
 MIN_SLEEP = 1.0
 MAX_SLEEP = 3.0
 SAVE_INTERVAL = 100
@@ -31,32 +19,9 @@ SAVE_INTERVAL = 100
 # 保存先
 FILENAME = str(DATA_DIR / "master_horse_data.csv")
 
-# 読み込むデータの場所
-DATA_DIRS = [
-    str(DATA_DIR / "train"),
-    str(DATA_DIR / "val"),
-    str(DATA_DIR / "test"),
-    str(DATA_DIR)
-]
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"
-]
-
-
-# ==========================================
 
 def create_session():
-    session = requests.Session()
-    retries = Retry(
-        total=3,
-        backoff_factor=2,
-        status_forcelist=[500, 502, 503, 504]
-    )
-    session.mount("https://", HTTPAdapter(max_retries=retries))
-
+    session = _base_session()
     session.headers.update({
         "User-Agent": random.choice(USER_AGENTS),
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
@@ -87,8 +52,7 @@ def scrape_pedigree_page(horse_id, session):
 
         if soup.title:
             title_text = soup.title.get_text()
-            if any(w in title_text for w in
-                   ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]):
+            if any(w in title_text for w in BLOCK_WORDS):
                 return "BLOCK"
 
         if not soup.find(id=re.compile("header|container|main")) and not soup.find(
@@ -116,7 +80,7 @@ def scrape_pedigree_page(horse_id, session):
             for td in tds:
                 try:
                     candidates.append((td, int(td.get("rowspan"))))
-                except:
+                except Exception:
                     pass
 
             candidates.sort(key=lambda x: x[1], reverse=True)
@@ -140,17 +104,8 @@ def scrape_pedigree_page(horse_id, session):
 
 
 def get_all_horse_ids():
-    print("🔍 各フォルダのレースデータから馬IDを収集中...")
-    files = []
-
-    for d in DATA_DIRS:
-        if not os.path.exists(d): continue
-        path_pattern = os.path.join(d, "race_data_*.csv")
-        found = glob.glob(path_pattern)
-        if found:
-            print(f"   -> {d} フォルダ: {len(found)} ファイル発見")
-            files.extend(found)
-
+    print("🔍 レースデータから馬IDを収集中...")
+    files = list(race_data_files().values())
     if not files:
         print("❌ レースデータが見つかりません。")
         return set()
@@ -160,7 +115,7 @@ def get_all_horse_ids():
         try:
             df = pd.read_csv(f, usecols=['horse_id'], dtype={'horse_id': str}, encoding='utf-8-sig')
             horse_ids.update(df['horse_id'].dropna().astype(str))
-        except:
+        except Exception:
             pass
 
     return horse_ids
@@ -181,7 +136,7 @@ def save_to_csv_safe(new_data, COLUMNS):
             df_new = df_new[existing_cols]
             df_new.to_csv(FILENAME, index=False, encoding='utf-8-sig', mode='a', header=False)
             return
-        except:
+        except Exception:
             pass
 
     df_new = df_new[COLUMNS]
@@ -195,9 +150,8 @@ def sanitize_existing_ped_file():
             df = pd.read_csv(FILENAME, dtype=str, encoding='utf-8-sig')
             before = len(df)
 
-            invalid_keywords = ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]
             mask = df['horse_name'].isnull()
-            for kw in invalid_keywords:
+            for kw in BLOCK_WORDS:
                 mask = mask | df['horse_name'].str.contains(kw, na=False)
 
             df_clean = df[~mask & df['horse_id'].notnull()]
@@ -208,7 +162,7 @@ def sanitize_existing_ped_file():
             print(f"   ⚠️ 血統マスタの自動クレンジング失敗: {e}")
 
 
-def main():
+def run():
     print(f"\n🚀 血統データの収集 (フォルダ整理版) を開始します")
     os.makedirs(os.path.dirname(FILENAME), exist_ok=True)
 
@@ -219,10 +173,8 @@ def main():
         try:
             df_exist = pd.read_csv(FILENAME, dtype={'horse_id': str}, encoding='utf-8-sig')
             if 'horse_id' in df_exist.columns:
-                invalid_keywords = ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限",
-                                    "大変混み合って"]
                 mask = df_exist['horse_name'].isnull()
-                for kw in invalid_keywords:
+                for kw in BLOCK_WORDS:
                     mask = mask | df_exist['horse_name'].str.contains(kw, na=False)
 
                 df_valid = df_exist[~mask]

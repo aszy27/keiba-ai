@@ -1,30 +1,19 @@
-# scrape/scrape_other_data.py
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
-import time
+# scrape/extras.py
+# レースごとの追加データ（ラップ・払戻・追い切り評価）と、馬ごとの生産者・馬主を取得する。
+# race_data_*.csv にあるレースのうち、まだ取っていないものだけを取る。途中で止めても再実行で続きから取れる。
+# 使い方: python -m scrape extras
 import os
-import re
-from tqdm import tqdm
-import glob
 import random
-import numpy as np
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from pathlib import Path
+import re
 import sys
+import time
 
-# ==========================================
-# ★パスの自動動的解決 (サブディレクトリ移動対策)
-# ==========================================
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
+import numpy as np
+import pandas as pd
+from bs4 import BeautifulSoup
+from tqdm import tqdm
 
-DATA_SEARCH_DIRS = [
-    str(DATA_DIR / "train"),
-    str(DATA_DIR / "val"),
-    str(DATA_DIR / "test")
-]
+from scrape.common import DATA_DIR, create_session, get_soup, race_data_files
 
 MASTER_FILE = str(DATA_DIR / "master_horse_data.csv")
 FILE_BREEDER = str(DATA_DIR / "breeder_data_progress.csv")
@@ -39,65 +28,6 @@ LAP_COLS = ["race_id", "lap_headers", "lap_times", "first_3f", "last_3f_race", "
 RETURN_COLS = ["race_id", "tansho", "fukusho", "wakuren", "umaren", "wide", "umatan", "sanrenpuku", "sanrentan"]
 TRAIN_COLS = ["race_id", "horse_id", "oikiri_rank"]
 BREEDER_COLS = ["horse_id", "breeder", "owner"]
-
-for f in [FILE_BREEDER, FILE_LAP, FILE_RETURN, FILE_TRAIN]:
-    os.makedirs(os.path.dirname(f), exist_ok=True)
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"
-]
-
-
-def create_session():
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=2, status_forcelist=[500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    return session
-
-
-def get_headers():
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Referer": "https://race.netkeiba.com/",
-        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
-    }
-
-
-def get_soup(session, url):
-    try:
-        res = session.get(url, headers=get_headers(), timeout=20)
-
-        if res.status_code == 404:
-            return "NO_DATA"
-
-        if res.status_code != 200:
-            return "BLOCK"
-
-        try:
-            html = res.content.decode('euc-jp')
-        except UnicodeDecodeError:
-            try:
-                html = res.content.decode('shift_jis')
-            except UnicodeDecodeError:
-                html = res.content.decode('utf-8', errors='replace')
-
-        soup = BeautifulSoup(html, "html.parser")
-
-        if soup.title:
-            title_text = soup.title.get_text()
-            if any(w in title_text for w in
-                   ["アクセス", "お手数ですが", "Error", "Cloudflare", "Block", "制限", "大変混み合って"]):
-                return "BLOCK"
-
-        if not soup.find(id=re.compile("header|container|main")) and not soup.find(
-                class_=re.compile("Race|Header|Layout")):
-            return "BLOCK"
-
-        return soup
-    except:
-        return "NETWORK_ERROR"
 
 
 def parse_lap(soup, race_id):
@@ -140,12 +70,12 @@ def parse_lap(soup, race_id):
                                 pace_type = "S"
                             else:
                                 pace_type = "M"
-                except:
+                except Exception:
                     pass
         lap_block["pace_type"] = pace_type
         if "lap_times" not in lap_block: return "NO_DATA"
         return lap_block
-    except:
+    except Exception:
         return "NO_DATA"
 
 
@@ -174,7 +104,7 @@ def parse_return(soup, race_id):
                     return_data[key_map[type_name]] = "|".join(clean_payouts)
         if len(return_data) <= 1: return "NO_DATA"
         return return_data
-    except:
+    except Exception:
         return "NO_DATA"
 
 
@@ -202,10 +132,10 @@ def parse_training(session, race_id):
                     "horse_id": horse_id,
                     "oikiri_rank": oikiri_rank
                 })
-            except:
+            except Exception:
                 continue
         return pd.DataFrame(data_list) if data_list else "NO_DATA"
-    except:
+    except Exception:
         return "NO_DATA"
 
 
@@ -228,7 +158,7 @@ def parse_breeder(session, horse_id):
                 elif "馬主" in ht:
                     owner = td.get_text(strip=True)
         return {"horse_id": horse_id, "breeder": breeder, "owner": owner}
-    except:
+    except Exception:
         return "NO_DATA"
 
 
@@ -253,7 +183,7 @@ def save_buffer_to_csv(buf, cols, filepath, is_concat=False):
             df = df[existing_cols]
             df.to_csv(filepath, index=False, encoding='utf-8-sig', mode='a', header=False)
             return
-        except:
+        except Exception:
             pass
 
     df.to_csv(filepath, index=False, encoding='utf-8-sig', mode='a', header=header)
@@ -269,7 +199,7 @@ def load_done_with_filter(path, key, category=None):
 
         # 過去の不完全なゴミデータのせいでレース丸ごと穴扱いされるバグを根底から粉砕
         return set(df[key].dropna().unique())
-    except:
+    except Exception:
         return set()
 
 
@@ -310,16 +240,14 @@ def sanitize_existing_files():
 
 def get_all_race_ids():
     found_ids = []
-    for d in DATA_SEARCH_DIRS:
-        files = glob.glob(os.path.join(d, "race_data_*.csv"))
-        for fpath in files:
-            try:
-                df = pd.read_csv(fpath, usecols=['race_id'], dtype=str, encoding='utf-8-sig')
-                ids = df['race_id'].unique().tolist()
-                found_ids.extend(ids)
-                print(f"   📂 {os.path.basename(fpath)} から {len(ids)} レース検出")
-            except:
-                pass
+    for fpath in race_data_files().values():
+        try:
+            df = pd.read_csv(fpath, usecols=['race_id'], dtype=str, encoding='utf-8-sig')
+            ids = df['race_id'].unique().tolist()
+            found_ids.extend(ids)
+            print(f"   📂 {os.path.basename(fpath)} から {len(ids)} レース検出")
+        except Exception:
+            pass
     return sorted(list(set(found_ids)))
 
 
@@ -330,7 +258,9 @@ def flush_buffers(buf_lap, buf_return, buf_train):
     print("💾 取得済みのバッファデータをすべて安全にセーブしました。")
 
 
-def main():
+def run():
+    for f in [FILE_BREEDER, FILE_LAP, FILE_RETURN, FILE_TRAIN]:
+        os.makedirs(os.path.dirname(f), exist_ok=True)
     print("🛡️ ステルスデータ収集 (Smart Target & BLOCK緊急停止 & 自動穴埋め版)")
     sanitize_existing_files()
     session = create_session()
@@ -352,7 +282,7 @@ def main():
     for rid in target_ids:
         try:
             year = int(str(rid)[:4])
-        except:
+        except Exception:
             continue
 
         is_return_target = (year >= 2024)
@@ -377,7 +307,7 @@ def main():
         for rid in tqdm(needed_ids, desc="Scraping Progress"):
             try:
                 year = int(str(rid)[:4])
-            except:
+            except Exception:
                 continue
 
             is_return_target = (year >= 2024)

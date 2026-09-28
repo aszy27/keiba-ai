@@ -10,4 +10,3 @@ networkx
 gensim
 requests
 beautifulsoup4
-keibascraper

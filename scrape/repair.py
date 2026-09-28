@@ -1,4 +1,4 @@
-# repair_race_info.py
+# scrape/repair.py
 """
 race_data_*.csv のうち、レース情報（芝ダ・距離・天候・馬場・発走時刻・競馬場など）が
 欠損しているレースを netkeiba のレース結果ページから補完する。
@@ -9,16 +9,16 @@ race_data_*.csv のうち、レース情報（芝ダ・距離・天候・馬場�
       直接効くため、学習・バックテスト・本番予測の履歴として条件がズレる原因になる。
 
 使い方:
-    python repair_race_info.py            # data/test のみ対象（通常はこれ）
-    python repair_race_info.py --all      # train / val / test すべて対象
-    python repair_race_info.py --dry-run  # 欠損レースの一覧だけ表示して何もしない
+    python -m scrape repair            # data/test のみ対象（通常はこれ）
+    python -m scrape repair --all      # train / val / test すべて対象
+    python -m scrape repair --dry-run  # 欠損レースの一覧だけ表示して何もしない
 
 ・別レースの出走馬・着順がそのままコピーされた「偽レース」（keibascraper の取得ミス）は削除する。
-  削除後に scrape/scrape_main_data.py を実行すると、そのレースだけ取り直される
+  削除後に python -m scrape rescrape --auto を実行すると、そのレースだけ取り直される
 ・既に値が入っている欄は上書きしない（空欄だけを埋める）
 ・書き込み前に元ファイルを race_data_YYYY.csv.bak_日時 としてバックアップする
+・v2/fetch_patches.py もここの parse_race_info を使う。表記を変えると v2 のパッチの中身も変わるので変えないこと
 """
-import argparse
 import glob
 import os
 import random
@@ -31,13 +31,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+from scrape.common import DATA_DIR, PLACE_MAP
 
-PLACE_MAP = {
-    "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
-    "06": "中山", "07": "中京", "08": "京都", "09": "阪神", "10": "小倉"
-}
 GRADE_ICON = {"Icon_GradeType1": "GI", "Icon_GradeType2": "GII", "Icon_GradeType3": "GIII"}
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -184,7 +179,7 @@ def repair_file(path: str, dry_run: bool):
             print(f"   💾 バックアップ: {os.path.basename(backup)}")
             df = df[~df['race_id'].isin(phantoms)].copy()
             df.to_csv(path, index=False, encoding='utf-8-sig')
-            print(f"   ✅ 削除しました。scrape/scrape_main_data.py を実行して正しいデータを取り直してください。")
+            print(f"   ✅ 削除しました。python -m scrape rescrape --auto で正しいデータを取り直してください。")
 
     broken = find_broken(df)
     if not broken:
@@ -234,13 +229,8 @@ def repair_file(path: str, dry_run: bool):
                 print(f"      {rid} のページ表記: {raw_texts[rid]}")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--all', action='store_true', help='train / val / test すべてを対象にする')
-    ap.add_argument('--dry-run', action='store_true', help='欠損レースの一覧表示のみ')
-    args = ap.parse_args()
-
-    dirs = ['train', 'val', 'test'] if args.all else ['test']
+def run(all_dirs=False, dry_run=False):
+    dirs = ['train', 'val', 'test'] if all_dirs else ['test']
     files = []
     for d in dirs:
         files += sorted(glob.glob(os.path.join(DATA_DIR, d, "race_data_*.csv")))
@@ -248,10 +238,7 @@ def main():
         print("❌ race_data_*.csv が見つかりません")
         return
     for f in files:
-        repair_file(f, args.dry_run)
-    if not args.dry_run:
+        repair_file(f, dry_run)
+    if not dry_run:
         print("\n💡 修復後は evaluate_main.py / evaluate_dump.py を再実行するとバックテストに反映されます。")
 
-
-if __name__ == "__main__":
-    main()

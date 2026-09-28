@@ -268,14 +268,26 @@
 
 ### 毎週の運用手順
 ```
-scrape/scrape_main_data.py      # TARGET_YEAR を確認
-scrape/scrape_horse_ped.py
-scrape/scrape_other_data.py
-scrape/scrape_odds_api.py --years 2026   # 単勝・複勝オッズ（最終テスト2の判定に必要。途中から再開可）
-repair_race_info.py --dry-run   # 欠損・偽レースの確認（あれば --dry-run を外す）
+python -m scrape weekly         # 結果 → 血統 → ラップ・払戻・追い切り・生産者 → 単勝・複勝オッズ → repair（欠損補完）
+                                #   個別に回すなら results / pedigree / extras / odds / repair（python -m scrape --help）
 train_graph_embedding.py        # 血統ベクトルを更新する場合はモデルの再学習も必要
 predict_main.py                 # 鮮度チェックの警告を必ず確認する。1週分ずつ、馬体重が出てから
 ```
+
+### スクレイパーの統合（2026-09-29）
+- `scrape/` を1つのパッケージにまとめ、入口を `python -m scrape <コマンド>` にした。旧ファイルとの対応:
+  `scrape_main_data.py` → `results` / `scrape_horse_ped.py` → `pedigree` / `scrape_other_data.py` → `extras` /
+  `scrape_odds_api.py` → `odds` / `v2/scrape_odds_exotic.py` → `odds-exotic` / `repair_race_info.py` → `repair` /
+  `rescrape_races.py` → `rescrape`。HTML版の `scrape_odds.py` は API 版に置き換わったので削除。
+  旧システムのコード（`predict_main.py` など）のメッセージは旧ファイル名のままにしてある（変更しない方針のため）。
+- **keibascraper はやめた。** `scrape/results.py` に同じ CSS セレクタ・正規表現・変換を移植し、
+  保存した db.netkeiba のページで keibascraper と値・型まで完全に一致することを確認した（回帰テスト `scrape/tests/`）。
+  出力の表記を変えると学習済みモデルと前向き検証の特徴量がずれるので、表記は `results.py` では直さず `v2/normalize.py` 側で吸収する。
+- **偽レースの原因が分かった。** db.netkeiba は存在しないレース番号（11Rしかない日の12Rなど）を指定されると、その日の1Rのページを返す。
+  `results` はページが表示しているレースIDが指定と違えば保存しない。
+- 最近の db.netkeiba のページからは keibascraper と同じ方法では芝ダ・距離・天候・馬場が取れず空欄になる（`course` が「中山NoneNone」）。
+  keibascraper でも同じだったので出力は変えず、`repair` で race.netkeiba から埋める（`weekly` は repair まで実行する）。
+- 発走前オッズのスナップショット（`v2/scrape_odds_snapshot.py`）はタスクスケジューラから動いているので、まだ移していない。
 
 ---
 

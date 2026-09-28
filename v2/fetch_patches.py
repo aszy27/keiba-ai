@@ -12,8 +12,8 @@ import time
 
 import pandas as pd
 
-from repair_race_info import parse_race_info
-from rescrape_races import fetch_race
+from scrape.repair import parse_race_info
+from scrape.rescrape import fetch_race
 from v2.paths import PATCH_DIR, table_path
 
 INFO_COLS = ["race_id", "race_name", "race_time", "type", "length", "handed", "weather", "condition"]

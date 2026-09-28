@@ -178,7 +178,7 @@ def check_others(laps, training, horses, courses, races, runners):
     _add(out, "ERROR", "horses: horse_id の重複", horses.loc[horses["horse_id"].duplicated(), "horse_id"])
     ids = runners["horse_id"].drop_duplicates()
     _add(out, "WARN", "horses: 血統マスタに無い出走馬（頭数）", ids[~ids.isin(horses["horse_id"])],
-         "scrape/scrape_horse_ped.py で取得する")
+         "python -m scrape pedigree で取得する")
 
     flat = races[races["surface"].isin(["芝", "ダート"])]
     key = flat["place"] + flat["surface"]

@@ -1,4 +1,4 @@
-# rescrape_races.py
+# scrape/rescrape.py
 """
 指定したレースを netkeiba のレース結果ページ（db.netkeiba.com）から直接取り直し、
 race_data_YYYY.csv に書き戻す。
@@ -8,9 +8,12 @@ race_data_YYYY.csv に書き戻す。
       結果ページを直接パースして同じ列構成で保存する。
 
 使い方:
-    python rescrape_races.py --auto                 # 抜けているレースを自動検出して取得
-    python rescrape_races.py --ids 202605010308,202605010309
-    python rescrape_races.py --auto --dry-run       # 取得して中身を表示するだけ（保存しない）
+    python -m scrape rescrape --auto                 # 抜けているレースを自動検出して取得
+    python -m scrape rescrape --ids 202605010308,202605010309
+    python -m scrape rescrape --auto --dry-run       # 取得して中身を表示するだけ（保存しない）
+
+・v2/fetch_patches.py もここの fetch_race を使う（取り直したレースは data/v2/patches/ に保存される）。
+  パース結果が変わると v2 のパッチの中身も変わるので、ここの列・表記は変えないこと
 
 ・db.netkeiba が別レースの内容を返す場合は race.netkeiba の結果ページから取り直す
 ・どちらのページでも同じ日の別レースと出走馬が同一だった場合は保存しない
@@ -19,7 +22,6 @@ race_data_YYYY.csv に書き戻す。
 ・既存の同じ race_id の行は置き換える
 ・書き込み前に元ファイルを race_data_YYYY.csv.bak_日時 としてバックアップする
 """
-import argparse
 import glob
 import os
 import random
@@ -33,13 +35,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+from scrape.common import DATA_DIR, PLACE_MAP
 
-PLACE_MAP = {
-    "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
-    "06": "中山", "07": "中京", "08": "京都", "09": "阪神", "10": "小倉"
-}
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
@@ -385,13 +382,8 @@ def find_phantom_ids(df: pd.DataFrame) -> list:
     return sorted(out)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--ids', help='取得するレースID（カンマ区切り）')
-    ap.add_argument('--auto', action='store_true', help='race_data_*.csv で抜けているレースを自動検出する')
-    ap.add_argument('--year', type=int, default=None, help='対象年（省略時はレースIDから判定）')
-    ap.add_argument('--dry-run', action='store_true', help='取得内容を表示するだけで保存しない')
-    args = ap.parse_args()
+def run(args):
+    """args: ids（カンマ区切り）/ auto / year / dry_run"""
 
     files = {}
     for path in sorted(glob.glob(os.path.join(DATA_DIR, "*", "race_data_*.csv"))):
@@ -468,8 +460,5 @@ def main():
     if args.dry_run:
         print("\n（--dry-run のため保存していません）")
     else:
-        print("\n💡 この後 repair_race_info.py → evaluate_dump.py の順で実行してください。")
+        print("\n💡 この後 python -m scrape repair → evaluate_dump.py の順で実行してください。")
 
-
-if __name__ == "__main__":
-    main()
