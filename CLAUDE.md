@@ -11,7 +11,8 @@
 > 回収率の区間は100%をまたぐ。**締切前オッズでの前向き検証（2026-09-07以降）に合格するまで実際に賭けない。**
 > **前向き検証を 2026-09-17 に事前登録済み**（`docs/rebuild_plan.md` の「前向き検証」）。判定対象は **C[all]（176列＋3シード平均）・期待値1.2以上の単勝**、
 > 発走3分前のスナップショットのオッズで、1,000Rたまってから1回だけ判定する。
-> 開催日の朝に `python -m v2.scrape_odds_snapshot` を起動してデータを貯めること。判定前に特徴量・閾値・学習期間を変えないこと。
+> スナップショットはタスクスケジューラ（`keiba-odds-snapshot`）が毎日 `python -m scrape snapshot` を起動して貯める。**開催日はPCの電源を切らないこと**（スリープは可）。
+> 判定前に特徴量・閾値・学習期間を変えないこと。
 
 2026-09-11〜09-14 に「バックテストは回収率140%なのに実戦は73%」という問題を調査した結果と、
 その過程で入れた修正・残っている課題をまとめる。システム自体の説明は `README.md` を参照。
@@ -279,7 +280,7 @@ predict_main.py                 # 鮮度チェックの警告を必ず確認す�
   `scrape_main_data.py` → `results` / `scrape_horse_ped.py` → `pedigree` / `scrape_other_data.py` → `extras` /
   `scrape_odds_api.py` → `odds` / `v2/scrape_odds_exotic.py` → `odds-exotic` / `repair_race_info.py` → `repair` /
   `rescrape_races.py` → `rescrape`。HTML版の `scrape_odds.py` は API 版に置き換わったので削除。
-  旧システムのコード（`predict_main.py` など）のメッセージは旧ファイル名のままにしてある（変更しない方針のため）。
+  旧システムのコード（`predict_main.py`・`train_graph_embedding.py`）は、案内メッセージのファイル名だけを新しいコマンドに書き換えた（処理は無変更）。
 - **keibascraper はやめた。** `scrape/results.py` に同じ CSS セレクタ・正規表現・変換を移植し、
   保存した db.netkeiba のページで keibascraper と値・型まで完全に一致することを確認した（回帰テスト `scrape/tests/`）。
   出力の表記を変えると学習済みモデルと前向き検証の特徴量がずれるので、表記は `results.py` では直さず `v2/normalize.py` 側で吸収する。
@@ -287,7 +288,8 @@ predict_main.py                 # 鮮度チェックの警告を必ず確認す�
   `results` はページが表示しているレースIDが指定と違えば保存しない。
 - 最近の db.netkeiba のページからは keibascraper と同じ方法では芝ダ・距離・天候・馬場が取れず空欄になる（`course` が「中山NoneNone」）。
   keibascraper でも同じだったので出力は変えず、`repair` で race.netkeiba から埋める（`weekly` は repair まで実行する）。
-- 発走前オッズのスナップショット（`v2/scrape_odds_snapshot.py`）はタスクスケジューラから動いているので、まだ移していない。
+- 発走前オッズのスナップショットも `scrape/snapshot.py`（`python -m scrape snapshot`）に移した。取得のタイミング・保存形式は変えていない。
+  タスクスケジューラの `v2/run_snapshot.ps1` もこれを呼ぶ。動作確認は `--now --out-dir <作業用フォルダ>` で本番のデータに混ぜずに行える。
 
 ---
 

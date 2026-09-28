@@ -1,5 +1,5 @@
 ﻿# v2/run_snapshot.ps1
-# 開催日のオッズスナップショット取得（v2/scrape_odds_snapshot.py）をタスクスケジューラから起動するための入れ物。
+# 開催日のオッズスナップショット取得（scrape/snapshot.py（python -m scrape snapshot））をタスクスケジューラから起動するための入れ物。
 #   - 開催日でなければスクリプト側がすぐ終了するので、毎日実行してよい
 #   - 取得中はPCをスリープさせない（画面は消えてよい）
 #   - 出力は logs/snapshot_YYYYMMDD.log に追記。30分ごとの再実行で取りこぼしを拾い直す
@@ -23,7 +23,7 @@ try {
     Set-Location $proj
     $env:PYTHONIOENCODING = 'utf-8'
     # 文字化けを避けるため、リダイレクトは cmd 側（バイト単位）で行う
-    & cmd /c """$py"" -m v2.scrape_odds_snapshot >> ""$log"" 2>&1"
+    & cmd /c """$py"" -m scrape snapshot >> ""$log"" 2>&1"
     "=== $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') 終了 (exit=$LASTEXITCODE) ===" | Out-File -FilePath $log -Append -Encoding utf8
 } finally {
     [Keiba.Power]::SetThreadExecutionState(0x80000000) | Out-Null

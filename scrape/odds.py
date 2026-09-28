@@ -4,7 +4,7 @@
 #  - 組み合わせ券（全通り）: 4=馬連 / 5=ワイド（下限・上限）/ 7=3連複 / 8=3連単 → data/v2/odds_exotic/<年>_type<券種>.parquet
 #    払戻は「当たった組み合わせのオッズ×100」で計算できるので、払戻データが無いレースも検証に使える。
 #    3連単は最大4,896通りあるので、年・券種ごとに分けて保存する。
-# 発走前のオッズ（前向き検証のスナップショット）は v2/scrape_odds_snapshot.py。
+# 発走前のオッズ（前向き検証のスナップショット）は scrape/snapshot.py。
 #
 # 使い方: python -m scrape odds --years 2024,2025,2026
 #         python -m scrape odds-exotic --years 2020 --types 7,8 [--limit 500]

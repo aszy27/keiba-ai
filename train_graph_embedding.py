@@ -83,7 +83,7 @@ def main():
     print("🧬 血統の数値化（グラフ埋め込み: DeepWalk）を開始します...")
 
     if not os.path.exists(INPUT_FILE):
-        print(f"❌ {INPUT_FILE} が見つかりません。scrape_horse_ped.py を実行してください。")
+        print(f"❌ {INPUT_FILE} が見つかりません。python -m scrape pedigree を実行してください。")
         return
 
     if os.path.exists(OUTPUT_FILE):
@@ -131,7 +131,7 @@ def main():
     print(f"   -> ノード数(馬): {num_nodes}, エッジ数(親子関係): {G.number_of_edges()}")
 
     if num_nodes < 10:
-        print("⚠️ データが少なすぎます。scrape_horse_ped.py でデータを収集してください。")
+        print("⚠️ データが少なすぎます。python -m scrape pedigree でデータを収集してください。")
         return
 
     print(f"🚶 メモリ最適化済みランダムウォーク・ジェネレータを起動 (Walk={WALK_LENGTH}, N={NUM_WALKS})...")

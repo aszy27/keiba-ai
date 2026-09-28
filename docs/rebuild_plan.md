@@ -286,6 +286,9 @@
   なお週明けの `ingest` / `features` は自動化していない（手動のまま）。
   **2026-09-29 変更:** `powershell.exe -WindowStyle Hidden` の直接起動ではコンソールが一瞬表示され、ゲーム中などに邪魔になるため、
   タスクの起動を `wscript.exe //B v2/run_snapshot_hidden.vbs`（`run_snapshot.ps1` を非表示で起動するだけ）に変えた。取得内容・スケジュールは不変。
+  **同日: スクレイパーを `scrape/` に統合**し、`v2/scrape_odds_snapshot.py` は `scrape/snapshot.py`（`python -m scrape snapshot`）に移した。
+  コードは置き場所と起動方法だけの変更で、取得のタイミング・API・保存先（`data/v2/odds_snapshots/`）・列は同じ。この文書の以前の記述の
+  `v2.scrape_odds_snapshot` は `scrape snapshot` と読み替える。旧手順のスクレイプは `python -m scrape weekly` にまとめた。
 
 ### 学習設定の調整（2026-09-17、`v2/tune.py`、ログ `tune.log`）
 - 後出しを避けるため2段階: 段階A（学習 2013〜2016 / ES 2017 / 採点 **2018年**）で24通りを探索 → 段階B（学習 2013〜2017 / ES 2018 / 報告 **2019〜2020年**）で現行設定と比較。

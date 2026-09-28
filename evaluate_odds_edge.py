@@ -1,6 +1,6 @@
 # evaluate_odds_edge.py
 # モデルのスコアが確定単勝オッズ以上の情報を持つかを、レース内の条件付きロジットで検証する。
-# 入力: result/backtest_horses.csv (evaluate_dump.py) と data/odds_data_progress.csv (scrape/scrape_odds.py)
+# 入力: result/backtest_horses.csv (evaluate_dump.py) と data/odds_data_progress.csv (旧 scrape/scrape_odds.py。削除済み)
 import os
 
 import numpy as np

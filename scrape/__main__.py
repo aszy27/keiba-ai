@@ -10,10 +10,10 @@
 #   python -m scrape odds-exotic --years 2020 [--types 7,8] [--limit 500]   # 組み合わせ券の確定オッズ
 #   python -m scrape repair [--all] [--dry-run]  # レース情報の欠損補完・偽レースの削除
 #   python -m scrape rescrape (--ids ID,... | --auto) [--year Y] [--dry-run]   # 指定レースを取り直す
-#
-# 発走前オッズのスナップショット（前向き検証）は v2/scrape_odds_snapshot.py（タスクスケジューラから起動）。
+#   python -m scrape snapshot [--date YYYYMMDD] [--now]   # 発走前オッズのスナップショット（前向き検証。タスクスケジューラが毎日起動）
 import argparse
 import datetime
+from pathlib import Path
 
 
 def main():
@@ -42,6 +42,11 @@ def main():
     p.add_argument("--auto", action="store_true", help="抜けているレース・偽レースを自動で探す")
     p.add_argument("--year", type=int, default=None)
     p.add_argument("--dry-run", action="store_true", help="取得内容を表示するだけで保存しない")
+    p = sub.add_parser("snapshot", help="発走前オッズのスナップショット")
+    p.add_argument("--date", default=datetime.datetime.now().strftime("%Y%m%d"))
+    p.add_argument("--minutes", default=None, help="発走の何分前に取るか（カンマ区切り。既定は snapshot.LADDER）")
+    p.add_argument("--now", action="store_true", help="待たずに全レースを1回ずつ取得する（動作確認用）")
+    p.add_argument("--out-dir", type=Path, default=None, help="保存先（既定は data/v2/odds_snapshots）")
     args = ap.parse_args()
 
     if args.cmd in ("weekly", "results"):
@@ -69,6 +74,9 @@ def main():
     if args.cmd == "rescrape":
         from scrape import rescrape
         rescrape.run(args)
+    if args.cmd == "snapshot":
+        from scrape import snapshot
+        snapshot.run(args)
 
 
 if __name__ == "__main__":

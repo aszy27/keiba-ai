@@ -137,7 +137,7 @@ def scrape_oikiri(race_id: str) -> dict:
             if not horse_a: continue
             horse_id = re.search(r'/horse/(\d+)', horse_a['href']).group(1)
 
-            # 🔴 FIX: 学習データ収集側(scrape_other_data.parse_training)と完全に同じ
+            # 🔴 FIX: 学習データ収集側(scrape/extras.py の parse_training)と完全に同じ
             #          生テキストを保持する（正規化は features.py が一元的に行う）
             oikiri_rank = "C"
             rank_elem = row.find("td", class_=re.compile(r"Oikiri_Rank|Rank"))
@@ -307,7 +307,7 @@ def check_data_freshness(df_hist_all: pd.DataFrame, df_targets: pd.DataFrame) ->
             gap = (first_date - last_date).days
             if gap > 9:
                 issues.append(f"レース結果が {last_date.date()} までしかありません（予測日の{gap}日前）。"
-                              f"scrape/scrape_main_data.py で前週までの結果を取得してから実行してください。")
+                              f"python -m scrape results で前週までの結果を取得してから実行してください。")
 
             recent = hist_before[hist_before['race_date'] >= first_date - pd.Timedelta(days=60)]
             if not recent.empty and 'type' in recent.columns and 'length' in recent.columns:
@@ -317,7 +317,7 @@ def check_data_freshness(df_hist_all: pd.DataFrame, df_targets: pd.DataFrame) ->
                 n_bad = int((bad['t'] | bad['l']).sum())
                 if n_bad:
                     issues.append(f"直近60日のレースのうち {n_bad}R で芝ダ・距離などが欠損しています。"
-                                  f"repair_race_info.py で修復してください。")
+                                  f"python -m scrape repair で修復してください。")
 
     tgt_horses = df_targets['horse_id'].astype(str).unique()
     if os.path.exists(PEDIGREE_FILE):
@@ -326,14 +326,14 @@ def check_data_freshness(df_hist_all: pd.DataFrame, df_targets: pd.DataFrame) ->
             miss = [h for h in tgt_horses if h not in ped_ids]
             if miss:
                 issues.append(f"出走馬 {len(miss)}/{len(tgt_horses)} 頭が血統マスタに未登録です（種牡馬・血統ベクトルが不明扱い）。"
-                              f"scrape/scrape_horse_ped.py を先に実行してください。")
+                              f"python -m scrape pedigree を先に実行してください。")
         except Exception as e:
             print(f"   ⚠️ 血統マスタ確認失敗: {e}")
 
     if 'breeder' in df_targets.columns:
         n_nb = int(df_targets.drop_duplicates('horse_id')['breeder'].isna().sum())
         if n_nb:
-            issues.append(f"出走馬 {n_nb} 頭の生産者が未登録です。scrape/scrape_other_data.py を先に実行してください。")
+            issues.append(f"出走馬 {n_nb} 頭の生産者が未登録です。python -m scrape extras を先に実行してください。")
 
     w_missing = pd.to_numeric(df_targets['weight'], errors='coerce').isna().mean()
     if w_missing > 0.5:
