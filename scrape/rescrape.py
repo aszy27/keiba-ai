@@ -311,9 +311,9 @@ def parse_modern_page(race_id: str, verbose: bool = False) -> pd.DataFrame:
     m_w = re.search(r'天候:([^/]+)', info_c)
     weather = next((x for x in ["小雪", "雪", "小雨", "雨", "曇", "晴"] if m_w and x in m_w.group(1)), None)
     m_c = re.search(r'馬場:([^/]+)', info_c)
-    condition = next((x for x in ["不良", "稍重", "稍", "重", "良"] if m_c and x in m_c.group(1)), None)
-    if condition == "稍重":
-        condition = "稍"
+    # 不良は「不」と1文字で書かれる
+    condition = next((x for x in ["不良", "稍重", "稍", "重", "良", "不"] if m_c and x in m_c.group(1)), None)
+    condition = {"稍重": "稍", "不": "不良"}.get(condition, condition)
 
     name_tag = soup.find("h1", class_="RaceName")
     race_name = name_tag.get_text(strip=True) if name_tag else ""

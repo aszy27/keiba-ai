@@ -288,6 +288,10 @@ predict_main.py                 # 鮮度チェックの警告を必ず確認す�
   `results` はページが表示しているレースIDが指定と違えば保存しない。
 - 最近の db.netkeiba のページからは keibascraper と同じ方法では芝ダ・距離・天候・馬場が取れず空欄になる（`course` が「中山NoneNone」）。
   keibascraper でも同じだったので出力は変えず、`repair` で race.netkeiba から埋める（`weekly` は repair まで実行する）。
+- **repair が不良馬場を補完できていなかった。** race.netkeiba の結果ページは不良を「馬場:不」と1文字で書くため、「不良」を探す処理では空欄のまま残っていた。
+  `scrape/repair.py` と `scrape/rescrape.py` で「不」→「不良」に直した（2026-09-20 の中山ダート6Rを補完）。
+  2012〜2024年にも同じ理由などで欠けた88Rがあるが、旧システムと前向き検証のモデルの学習データなので判定まで直さない（v2 は `data/v2/patches/` と同日補完で扱っている）。
+  旧システムの `predict_main.py` の出馬表パースも「不」を拾えず「良」になる（旧システムは変更しない方針なのでそのまま）。
 - 発走前オッズのスナップショットも `scrape/snapshot.py`（`python -m scrape snapshot`）に移した。取得のタイミング・保存形式は変えていない。
   タスクスケジューラの `v2/run_snapshot.ps1` もこれを呼ぶ。動作確認は `--now --out-dir <作業用フォルダ>` で本番のデータに混ぜずに行える。
 

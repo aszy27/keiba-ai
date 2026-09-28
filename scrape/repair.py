@@ -102,8 +102,9 @@ def parse_race_info(race_id: str) -> dict:
         m_c = re.search(r'馬場:([^/]+)', text)
         if m_c:
             c = m_c.group(1)
-            cond = next((x for x in ["不良", "稍重", "稍", "重", "良"] if x in c), None)
-            info['condition'] = "稍" if cond == "稍重" else cond
+            # race.netkeiba は不良を「不」と1文字で書く（「不良」だけを探すと不良馬場が空欄のまま残る）
+            cond = next((x for x in ["不良", "稍重", "稍", "重", "良", "不"] if x in c), None)
+            info['condition'] = {"稍重": "稍", "不": "不良"}.get(cond, cond)
 
     name_tag = soup.find("h1", class_="RaceName")
     if name_tag:
