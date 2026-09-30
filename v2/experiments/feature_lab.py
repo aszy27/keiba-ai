@@ -8,11 +8,11 @@ import argparse
 import numpy as np
 import pandas as pd
 
-from v2 import features as ft
-from v2 import features_extra as fx
-from v2.model_base import eligible, train
+from v2.data import features as ft
+from v2.data import features_extra as fx
+from v2.model.base import eligible, train
 from v2.paths import table_path
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit
 
 SPLIT = {"train": ("2013-01-01", "2018-01-01"), "valid": ("2018-01-01", "2019-01-01"),
          "report": ("2019-01-01", "2021-01-01")}

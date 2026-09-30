@@ -1,4 +1,4 @@
-# v2/softmax.py
+# v2/model/softmax.py
 # レース内ソフトマックス（条件付きロジット）の共通処理。1行 = 1頭で、同じレースの行が連続している前提。
 import numpy as np
 from scipy.optimize import minimize

@@ -1,6 +1,6 @@
 import pandas as pd
 
-from v2.checks import check_odds, check_payouts, check_runners
+from v2.data.checks import check_odds, check_payouts, check_runners
 
 
 def _races(ids, dates):

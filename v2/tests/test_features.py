@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from v2 import features as ft
-from v2 import features_extra as fx
+from v2.data import features as ft
+from v2.data import features_extra as fx
 from v2.paths import table_path
 
 

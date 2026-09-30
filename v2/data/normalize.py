@@ -1,4 +1,4 @@
-# v2/normalize.py
+# v2/data/normalize.py
 # 旧データ（keibascraper 由来の CSV）の表記ゆれを v2 の値にそろえる関数群。副作用なし。
 import re
 import unicodedata

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from v2 import normalize as nz
+from v2.data import normalize as nz
 
 
 @pytest.mark.parametrize("broken, expected", [

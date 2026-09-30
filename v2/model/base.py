@@ -1,19 +1,19 @@
-# v2/model_base.py
+# v2/model/base.py
 # M3: オッズを使わない基礎モデル。LightGBM のレース内ソフトマックスで勝ち馬を予測する。
 #  - 学習 2013〜2018 / early stopping 2019 / 評価 2020（2012年は過去成績が溜まっていないので学習に使わない）
 #  - 2019年で係数（温度）を合わせてから 2020年の勝ち馬の対数尤度を出す
 #  - 旧モデルの OOF スコア（v2/experiments/legacy_scores.py）があれば、同じレースで比べる
 #  - --ablation で特徴量グループを1つずつ外したときの差を出す
-# 使い方: python -m v2.model_base [--ablation]
+# 使い方: python -m v2.model.base [--ablation]
 import argparse
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from v2 import features as ft
+from v2.data import features as ft
 from v2.paths import V2_DIR, table_path
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
 
 SPLIT = {"train": ("2013-01-01", "2019-01-01"), "valid": ("2019-01-01", "2020-01-01"),
          "test": ("2020-01-01", "2021-01-01")}

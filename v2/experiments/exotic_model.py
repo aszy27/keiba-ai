@@ -10,8 +10,8 @@ import argparse
 import numpy as np
 import pandas as pd
 
-from v2 import model_trip as mt
-from v2.model_base import eligible
+from v2.model import trip as mt
+from v2.model.base import eligible
 from v2.paths import V2_DIR, table_path
 
 PREDS_CACHE = V2_DIR / "dev_preds_all.parquet"

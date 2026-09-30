@@ -286,7 +286,7 @@ predict_main.py                 # 鮮度チェックの警告を必ず確認す�
   旧システムのコード（`predict_main.py`・`train_graph_embedding.py`）は、案内メッセージのファイル名だけを新しいコマンドに書き換えた（処理は無変更）。
 - **keibascraper はやめた。** `scrape/results.py` に同じ CSS セレクタ・正規表現・変換を移植し、
   保存した db.netkeiba のページで keibascraper と値・型まで完全に一致することを確認した（回帰テスト `scrape/tests/`）。
-  出力の表記を変えると学習済みモデルと前向き検証の特徴量がずれるので、表記は `results.py` では直さず `v2/normalize.py` 側で吸収する。
+  出力の表記を変えると学習済みモデルと前向き検証の特徴量がずれるので、表記は `results.py` では直さず `v2/data/normalize.py` 側で吸収する。
 - **偽レースの原因が分かった。** db.netkeiba は存在しないレース番号（11Rしかない日の12Rなど）を指定されると、その日の1Rのページを返す。
   `results` はページが表示しているレースIDが指定と違えば保存しない。
 - 最近の db.netkeiba のページからは keibascraper と同じ方法では芝ダ・距離・天候・馬場が取れず空欄になる（`course` が「中山NoneNone」）。
@@ -296,7 +296,7 @@ predict_main.py                 # 鮮度チェックの警告を必ず確認す�
   2012〜2024年にも同じ理由などで欠けた88Rがあるが、旧システムと前向き検証のモデルの学習データなので判定まで直さない（v2 は `data/v2/patches/` と同日補完で扱っている）。
   旧システムの `predict_main.py` の出馬表パースも「不」を拾えず「良」になる（旧システムは変更しない方針なのでそのまま）。
 - 発走前オッズのスナップショットも `scrape/snapshot.py`（`python -m scrape snapshot`）に移した。取得のタイミング・保存形式は変えていない。
-  タスクスケジューラの `v2/run_snapshot.ps1` もこれを呼ぶ。動作確認は `--now --out-dir <作業用フォルダ>` で本番のデータに混ぜずに行える。
+  タスクスケジューラの `v2/live/run_snapshot.ps1` もこれを呼ぶ。動作確認は `--now --out-dir <作業用フォルダ>` で本番のデータに混ぜずに行える。
 
 ---
 

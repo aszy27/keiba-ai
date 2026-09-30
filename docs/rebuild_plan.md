@@ -803,3 +803,10 @@ python -m pytest v2/tests scrape/tests
 - **実験5の結果（基準 `res_mkt`、ログ `bench_mkt_place.log` / `bench_mkt_race.log`）→ どちらも不採用。**
   `mkt_place` +0.0008 [−0.0001, +0.0016]（2026年 −0.0029）/ `mkt_race` −0.0004 [−0.0012, +0.0004]（2026年 −0.0024）。
   複勝プールとのずれ・レース全体のオッズの形は、オッズ列（x_mkt・人気順）を入れた後では上積みにならない。**候補2の最有力は `res_mkt` のまま。**
+
+> **v2 のフォルダ整理（2026-09-30、処理は無変更）:** 役割ごとに分けた。`v2/{ingest,normalize,checks,fetch_patches,features,features_extra}.py` → `v2/data/`、
+> `v2/{softmax,plackett}.py` → `v2/model/`、`v2/model_base.py` → `v2/model/base.py`、`model_combined.py` → `model/combined.py`、
+> `model_trip.py` → `model/trip.py`、`v2/bench.py` → `v2/evaluate.py`、`v2/run_snapshot*.{ps1,vbs}` → `v2/live/`（タスクスケジューラの起動先も変更済み）。
+> 以前の記録の `python -m v2.model_trip` などは新しい場所に読み替える。移動後に `python -m v2.evaluate --tag current_after_move --ref current`
+> で全年の差が 0.0000 になることを確認した（ログ `evaluate_current_after_move.log`）。
+> **前向き検証の C[all] は凍結タグ `forward-c-all` のコードで判定する方針は変わらない。**

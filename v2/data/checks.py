@@ -1,4 +1,4 @@
-# v2/checks.py
+# v2/data/checks.py
 # v2 の表の検査。ingest.py が保存前に実行し、ERROR が1件でもあれば保存しない。
 # 件数は特に断りがなければレース数。例にはレースIDなどを最大8件載せる。
 from dataclasses import dataclass, field
@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from v2.normalize import CLASSES
+from v2.data.normalize import CLASSES
 
 LEVELS = ("ERROR", "WARN", "INFO")
 

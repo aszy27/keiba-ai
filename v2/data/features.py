@@ -1,4 +1,4 @@
-# v2/features.py
+# v2/data/features.py
 # 特徴量を作る唯一の場所。学習・評価・本番のすべてで build_features を使う。
 #
 # 原則: 日付 D のレースの特徴量は「D より前の日のレース結果」と「そのレース自身の発走前に分かる情報
@@ -255,7 +255,7 @@ def build_features(t):
     df = pd.concat([df, field_features(df)], axis=1)
     feats = FEATURES
     if "laps" in t:
-        from v2 import features_extra as fx   # 循環importを避けるためここで読む
+        from v2.data import features_extra as fx   # 循環importを避けるためここで読む
         df = pd.concat([df, fx.build(df)], axis=1)
         feats = FEATURES_TRIP + fx.EXTRA_FEATURES
     for c in CATEGORICAL:
@@ -264,7 +264,7 @@ def build_features(t):
 
 
 def main():
-    """全期間の特徴量を作って data/v2/features.parquet に保存する: python -m v2.features"""
+    """全期間の特徴量を作って data/v2/features.parquet に保存する: python -m v2.data.features"""
     import time
     start = time.time()
     f = build_features(load_tables())

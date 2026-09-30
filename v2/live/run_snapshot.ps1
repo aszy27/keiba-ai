@@ -1,4 +1,4 @@
-﻿# v2/run_snapshot.ps1
+﻿# v2/live/run_snapshot.ps1
 # 開催日のオッズスナップショット取得（scrape/snapshot.py（python -m scrape snapshot））をタスクスケジューラから起動するための入れ物。
 #   - 開催日でなければスクリプト側がすぐ終了するので、毎日実行してよい
 #   - 取得中はPCをスリープさせない（画面は消えてよい）

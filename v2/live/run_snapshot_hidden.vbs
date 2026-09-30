@@ -1,4 +1,4 @@
-' v2/run_snapshot_hidden.vbs
+' v2/live/run_snapshot_hidden.vbs
 ' Launch run_snapshot.ps1 from Task Scheduler without any console window.
 ' (powershell.exe -WindowStyle Hidden still flashes a console; wscript.exe has no window.)
 Dim ps1

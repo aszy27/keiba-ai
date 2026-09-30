@@ -1,6 +1,6 @@
 import pandas as pd
 
-from v2 import ingest
+from v2.data import ingest
 
 
 def _raw():

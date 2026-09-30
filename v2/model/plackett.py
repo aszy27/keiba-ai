@@ -1,4 +1,4 @@
-# v2/plackett.py
+# v2/model/plackett.py
 # 1〜K着の順序を使うレース内の尤度（Plackett-Luce）。1着だけを使う softmax.RaceGroups の拡張で、K=1 なら同じになる。
 #   s着目: まだ着順が決まっていない馬（着順 >= s。競走中止は最後まで残る）の中から s着の馬が選ばれる確率
 #          = exp(λ_s·u_i) / Σ exp(λ_s·u_j)。λ_1 = 1、λ_2 以降 = lam（2・3着は1着ほど能力どおりに決まらない分の割引。

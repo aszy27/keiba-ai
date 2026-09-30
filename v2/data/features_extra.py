@@ -1,4 +1,4 @@
-# v2/features_extra.py
+# v2/data/features_extra.py
 # 追加の特徴量（2026-09-17）。既存の FEATURES / TRIP_FEATURES は変えず、別グループとして足す。
 # build(df) は features.build_features の中から呼ばれ、馬の過去走・成績の集計・レース内比較が付いた後の df を受け取る。
 #
@@ -7,7 +7,7 @@
 import numpy as np
 import pandas as pd
 
-from v2 import features as ft
+from v2.data import features as ft
 
 # 条件別のスピード指数（名前, キー）
 FIG_BY = [("h_fig_going", ["horse_id", "going"]), ("h_fig_surface", ["horse_id", "surface"]),

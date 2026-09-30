@@ -10,7 +10,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 
 from v2.experiments.nar.fetch_results import RAW_DIR, decode
-from v2.normalize import normalize_going
+from v2.data.normalize import normalize_going
 
 OUT_DIR = RAW_DIR.parent
 BET_NAMES = {"単勝": "win", "複勝": "place", "枠連": "bracket_quinella", "馬連": "quinella", "ワイド": "wide",

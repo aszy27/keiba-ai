@@ -14,10 +14,10 @@ import numpy as np
 import pandas as pd
 
 from v2.experiments import exotic_model as em
-from v2 import model_trip as mt
-from v2.model_base import PARAMS, eligible
+from v2.model import trip as mt
+from v2.model.base import PARAMS, eligible
 from v2.paths import V2_DIR, table_path
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit
 
 YEARS = range(2019, 2027)          # 基礎モデルの予測が 2015年からあるので、残差の学習4年分を取ると2019年から
 END = "2026-09-07"                 # 前向き検証の期間は触らない

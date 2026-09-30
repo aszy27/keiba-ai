@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit
 
 
 def _simulate(n_races=3000, n_horses=10, beta=(1.5, -0.7), seed=0):

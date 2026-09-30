@@ -1,11 +1,11 @@
-# v2/fetch_patches.py
+# v2/data/fetch_patches.py
 # 検査で見つかったデータの穴を netkeiba から取り直し、data/v2/patches/ に保存する（旧 CSV は書き換えない）。
 #  - レース情報（芝ダ・距離・馬場・天候・レース名）が欠けているレース → patches/race_info.csv
 #  - 1開催日のレース数が11未満の日に抜けているレース                 → patches/race_rows/<race_id>.csv
-# 保存後に python -m v2.ingest を実行すると反映され、検査もやり直される。
+# 保存後に python -m v2.data.ingest を実行すると反映され、検査もやり直される。
 #
-# 使い方: python -m v2.fetch_patches            # 取得して保存
-#         python -m v2.fetch_patches --dry-run  # 対象の一覧だけ表示
+# 使い方: python -m v2.data.fetch_patches            # 取得して保存
+#         python -m v2.data.fetch_patches --dry-run  # 対象の一覧だけ表示
 import argparse
 import random
 import time
@@ -84,7 +84,7 @@ def main():
                 top = df.sort_values("rank").head(3)["horse_name"].tolist()
                 print(f"   保存 [{source}] {df['race_date'].iloc[0]} {df['race_name'].iloc[0]} {len(df)}頭 1〜3着: {top}")
             time.sleep(random.uniform(2.0, 4.0))
-    print("\n次に python -m v2.ingest を実行して反映・検査する")
+    print("\n次に python -m v2.data.ingest を実行して反映・検査する")
 
 
 if __name__ == "__main__":

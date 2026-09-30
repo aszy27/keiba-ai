@@ -11,11 +11,11 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from v2 import features as ft
-from v2 import features_extra as fx
-from v2.model_base import PARAMS, eligible
+from v2.data import features as ft
+from v2.data import features_extra as fx
+from v2.model.base import PARAMS, eligible
 from v2.paths import table_path
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
 
 TUNE = {"train": ("2013-01-01", "2017-01-01"), "valid": ("2017-01-01", "2018-01-01"), "score": ("2018-01-01", "2019-01-01")}
 CONFIRM = {"train": ("2013-01-01", "2018-01-01"), "valid": ("2018-01-01", "2019-01-01"), "score": ("2019-01-01", "2021-01-01")}

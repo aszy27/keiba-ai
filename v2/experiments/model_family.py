@@ -16,12 +16,12 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from v2 import features as ft
-from v2 import features_extra as fx
-from v2 import model_trip as mt
-from v2.model_base import PARAMS, eligible
+from v2.data import features as ft
+from v2.data import features_extra as fx
+from v2.model import trip as mt
+from v2.model.base import PARAMS, eligible
 from v2.paths import V2_DIR, table_path
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
 
 FEATS = ft.FEATURES_TRIP + fx.EXTRA_FEATURES
 CATS = [c for c in FEATS if c in ft.CATEGORICAL]

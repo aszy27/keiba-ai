@@ -1,7 +1,7 @@
 import numpy as np
 
-from v2.plackett import PLGroups
-from v2.softmax import RaceGroups
+from v2.model.plackett import PLGroups
+from v2.model.softmax import RaceGroups
 
 RACES = np.array([1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3])
 FINISH = np.array([2, 1, 3, 4, 3, 5, 1, np.nan, 2, 1, 2, 2])   # レース2に競走中止、レース3は2着同着（3着なし）

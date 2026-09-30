@@ -1,4 +1,4 @@
-# v2/model_combined.py
+# v2/model/combined.py
 # M4: 基礎モデル（オッズなし）とオッズの結合。M5（最終テスト）もこのファイルの --final で行う。
 #   段階1 (--build-base): 2021〜2026年の各年 Y について、2013〜Y-2年で学習・Y-1年で early stopping と温度合わせを
 #                         した基礎モデルで Y 年を予測する（その年を学習していない予測）→ data/v2/base_oos.parquet
@@ -8,19 +8,19 @@
 #          C. B を出発点に、残差を LightGBM で学習
 #          指標: 1レースあたり対数尤度の A との差と、期待値ベースの単勝回収率（確定オッズ・割引後）
 #   --final: 2026-01-01〜2026-09-06 を最終テストとして1回だけ評価する（docs/rebuild_plan.md の M5。設定は事前登録済み）
-# 使い方: python -m v2.model_combined --build-base   # 段階1（新しいレースを予測に含めるときも再実行する）
-#         python -m v2.model_combined --year 2024     # 段階2（開発。2024 か 2025）
-#         python -m v2.model_combined --final         # 最終テスト（1回だけ）
+# 使い方: python -m v2.model.combined --build-base   # 段階1（新しいレースを予測に含めるときも再実行する）
+#         python -m v2.model.combined --year 2024     # 段階2（開発。2024 か 2025）
+#         python -m v2.model.combined --final         # 最終テスト（1回だけ）
 import argparse
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from v2 import features as ft
-from v2.model_base import PARAMS, eligible
+from v2.data import features as ft
+from v2.model.base import PARAMS, eligible
 from v2.paths import V2_DIR, table_path
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
 
 BASE_OOS = V2_DIR / "base_oos.parquet"
 BASE_YEARS = range(2021, 2027)

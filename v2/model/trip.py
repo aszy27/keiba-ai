@@ -1,24 +1,24 @@
-# v2/model_trip.py
+# v2/model/trip.py
 # 展開・不利の特徴量（TRIP_FEATURES）がオッズへの上積みを生むかの検証（docs/rebuild_plan.md「展開・不利の特徴量」）。
 #   --build-base : 2015〜2023年の各年 Y を、学習 2013〜Y-2年 / early stopping・温度 Y-1年 の基礎モデルで予測する
 #                  （特徴量セット base=FEATURES と trip=FEATURES+TRIP_FEATURES の2つ）
 #   開発         : 報告2019年（学習 2015〜2017 / ES 2018）と報告2020年（学習 2015〜2018 / ES 2019）で
 #                  A オッズのみ / C（base）/ C+展開（trip）を比べ、C+展開の期待値の閾値を機械的に1つ選ぶ
 #   --final      : 学習 2016〜2019 / ES 2020 / 報告 2021〜2023 で1回だけ判定する
-# 使い方: python -m v2.model_trip --build-base
-#         python -m v2.model_trip
-#         python -m v2.model_trip --final --threshold 1.1
+# 使い方: python -m v2.model.trip --build-base
+#         python -m v2.model.trip
+#         python -m v2.model.trip --final --threshold 1.1
 import argparse
 
 import numpy as np
 import pandas as pd
 
-from v2 import features as ft
-from v2 import features_extra as fx
-from v2.model_base import PARAMS, eligible
-from v2.model_combined import RESIDUAL_PARAMS, _train, ev_table
+from v2.data import features as ft
+from v2.data import features_extra as fx
+from v2.model.base import PARAMS, eligible
+from v2.model.combined import RESIDUAL_PARAMS, _train, ev_table
 from v2.paths import V2_DIR, table_path
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit
 
 FEATURE_SETS = {"base": ft.FEATURES, "trip": ft.FEATURES_TRIP, "all": ft.FEATURES_TRIP + fx.EXTRA_FEATURES}
 BASE_YEARS = range(2015, 2024)

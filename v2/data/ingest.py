@@ -1,10 +1,10 @@
-# v2/ingest.py
+# v2/data/ingest.py
 # 旧データの CSV を正規化して data/v2/*.parquet に保存する。
 # 保存前に checks.py で検査し、ERROR があれば保存しない（レポートだけ data/v2/check_report.txt に書く）。
 # 旧 CSV は書き換えず、修正は data/v2/patches/ に置いて取り込み時に当てる。
 #
-# 使い方: python -m v2.ingest               # 検査して、ERROR が無ければ保存
-#         python -m v2.ingest --allow-errors  # ERROR があっても保存（中身の確認用）
+# 使い方: python -m v2.data.ingest               # 検査して、ERROR が無ければ保存
+#         python -m v2.data.ingest --allow-errors  # ERROR があっても保存（中身の確認用）
 import argparse
 import glob
 import json
@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from v2 import normalize as nz
-from v2.checks import Issue, format_report, run_checks
+from v2.data import normalize as nz
+from v2.data.checks import Issue, format_report, run_checks
 from v2.paths import LEGACY_DIR, PATCH_DIR, TABLES, V2_DIR, table_path
 
 FILE_RETURN = LEGACY_DIR / "return_data_progress.csv"

@@ -12,7 +12,7 @@ import pandas as pd
 
 from v2.experiments.nar.parse_results import OUT_DIR
 from v2.paths import table_path
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit
 
 ODDS_BANDS = [0, 2, 3, 5, 10, 20, 50, 100, 10000]
 POP_BANDS = [0, 1, 2, 3, 5, 8, 12, 18]

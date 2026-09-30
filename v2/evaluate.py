@@ -1,27 +1,27 @@
-# v2/bench.py
+# v2/evaluate.py
 # 候補2以降の開発用の採点（docs/rebuild_plan.md「候補2以降の開発」）。凍結した C[all] のコードは変えず、変更はここで試す。
 # 採点は年ごとの前進検証（2019〜2026-09-06）の C − A。各年 Y は
 #   基礎モデル: 学習 2013〜Y-2 / ES Y-1（3シード平均、温度を Y-1年で合わせる）
 #   残差:       学習 [Y-4, Y-1) / ES [Y-1, Y)
 # 結果はレース単位で data/v2/bench/<tag>.parquet に保存し、--ref の版と同じレースで比べる（対応のある差）。
 #
-# 使い方: python -m v2.bench --tag current                          # 現行（C[all] と同じ作り方）。最初に1回
-#         python -m v2.bench --tag res_pl3 --residual pl            # 残差を 1〜3着の順序で学習
-#         python -m v2.bench --build-base base_pl3 --base-objective pl   # 基礎モデルを 1〜3着で学習し直す（時間がかかる）
-#         python -m v2.bench --tag base_pl3 --base base_pl3
-#         python -m v2.bench --tag res_all_hl --res-years 0 --half-life 730   # 残差の学習期間を広げ、直近を重く
+# 使い方: python -m v2.evaluate --tag current                          # 現行（C[all] と同じ作り方）。最初に1回
+#         python -m v2.evaluate --tag res_pl3 --residual pl            # 残差を 1〜3着の順序で学習
+#         python -m v2.evaluate --build-base base_pl3 --base-objective pl   # 基礎モデルを 1〜3着で学習し直す（時間がかかる）
+#         python -m v2.evaluate --tag base_pl3 --base base_pl3
+#         python -m v2.evaluate --tag res_all_hl --res-years 0 --half-life 730   # 残差の学習期間を広げ、直近を重く
 import argparse
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from v2 import model_trip as mt
-from v2.model_base import PARAMS, eligible
-from v2.model_combined import RESIDUAL_PARAMS
+from v2.model import trip as mt
+from v2.model.base import PARAMS, eligible
+from v2.model.combined import RESIDUAL_PARAMS
 from v2.paths import V2_DIR, table_path
-from v2.plackett import PLGroups, lgb_objective_pl
-from v2.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
+from v2.model.plackett import PLGroups, lgb_objective_pl
+from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
 
 END = "2026-09-07"                       # 前向き検証の期間は読み込み直後に捨てる
 YEARS = range(2019, 2027)

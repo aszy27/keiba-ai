@@ -3,7 +3,7 @@
 # 既定は発走の 60/30/20/15/10/7/5/3/2/1 分前。判定に使うのは3分前（docs/rebuild_plan.md「前向き検証」）だが、
 # 取りこぼし対策と、締切直前のオッズの動きを残すために多めに取る。
 # 開催日の朝に起動しておくと、最終レースまで待機しながら取得を続ける（PCがスリープしないようにしておく）。
-# 実際にはタスクスケジューラ（keiba-odds-snapshot → v2/run_snapshot_hidden.vbs → v2/run_snapshot.ps1）が毎日起動する。
+# 実際にはタスクスケジューラ（keiba-odds-snapshot → v2/live/run_snapshot_hidden.vbs → v2/live/run_snapshot.ps1）が毎日起動する。
 # 前向き検証の判定に使うデータなので、取得のタイミング・保存形式は判定まで変えないこと。
 #
 # 使い方: python -m scrape snapshot                          # 今日

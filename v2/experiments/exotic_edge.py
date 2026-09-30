@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from v2.paths import table_path
-from v2.softmax import RaceGroups, fit_logit
+from v2.model.softmax import RaceGroups, fit_logit
 
 PERIODS = {"dev": ("2021-01-01", "2024-01-01"), "test": ("2024-01-01", "2026-01-01")}
 BET_TYPES = {"quinella": "馬連", "exacta": "馬単", "trio": "3連複", "trifecta": "3連単"}
