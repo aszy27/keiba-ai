@@ -30,6 +30,7 @@ BENCH_DIR = V2_DIR / "bench"
 CURRENT_BASE = V2_DIR / "base_oos_all_2015_2026.parquet"   # C[all] の基礎モデルの予測（walkforward.py --build-base）
 FEATS = mt.FEATURE_SETS["all"]
 THRESHOLDS = [1.0, 1.1, 1.2, 1.3]
+MARKET_FEATS = ["x_mkt", "mkt_rank"]     # --res-market で残差の入力に足すオッズ由来の列
 
 
 def load():
@@ -38,6 +39,13 @@ def load():
 
 
 def base_file(name):
+    """"a+b" は2つの基礎モデルの予測（温度合わせ後の効用）の平均"""
+    if "+" in name:
+        path = BENCH_DIR / f"base_{name}.parquet"
+        if not path.exists():
+            parts = [pd.read_parquet(base_file(n)).set_index(["race_id", "horse_id"])["u_base"] for n in name.split("+")]
+            pd.concat(parts, axis=1, join="inner").mean(axis=1).rename("u_base").reset_index().to_parquet(path, index=False)
+        return path
     return CURRENT_BASE if name == "current" else BENCH_DIR / f"base_{name}.parquet"
 
 
@@ -97,6 +105,7 @@ def market(df, base):
         d, _ = mt.with_market(df, "all")
     finally:
         mt.base_path = orig
+    d["mkt_rank"] = d.groupby("race_id")["x_mkt"].rank(ascending=False, method="min")
     return d
 
 
@@ -112,9 +121,12 @@ def run_year(mk, year, args):
     beta_b = fit_logit(tr[["x_mkt", "u_base"]].values, g["train"])
     base = {k: v[["x_mkt", "u_base"]].values @ beta_b for k, v in parts.items()}
     row_w = recency_weight(tr["race_date"], split["train"][1], args.half_life)
-    m = train(tr, parts["valid"], FEATS, RESIDUAL_PARAMS, args.residual, args.k, args.lam, args.stage_w,
+    feats = FEATS + (MARKET_FEATS if args.res_market else [])
+    params = dict(RESIDUAL_PARAMS, **({"num_leaves": args.res_leaves} if args.res_leaves else {}),
+                  **({"min_data_in_leaf": args.res_min_data} if args.res_min_data else {}))
+    m = train(tr, parts["valid"], feats, params, args.residual, args.k, args.lam, args.stage_w,
               base["train"], base["valid"], row_w)
-    ll_c, p_c = g["report"].ll(base["report"] + m.predict(rep[FEATS], num_iteration=m.best_iteration))
+    ll_c, p_c = g["report"].ll(base["report"] + m.predict(rep[feats], num_iteration=m.best_iteration))
     print(f"  {year}年 {len(ll_a):>5}R  C − A {np.mean(ll_c - ll_a):+.4f} / 基礎モデルの係数 {beta_b[1]:+.3f} / 木 {m.best_iteration}本",
           flush=True)
     races = pd.DataFrame({"race_id": rep["race_id"].iloc[g["report"].starts].to_numpy(), "year": year, "ll_a": ll_a, "ll_c": ll_c})
@@ -148,6 +160,9 @@ def main():
     ap.add_argument("--residual", choices=["win", "pl"], default="win")
     ap.add_argument("--half-life", type=float, help="残差の学習を直近重視にする半減期（日）")
     ap.add_argument("--res-years", type=int, default=3, help="残差の学習に使う年数（0 = 2015年から全部）")
+    ap.add_argument("--res-market", action="store_true", help="残差の入力にオッズ由来の列（MARKET_FEATS）を足す")
+    ap.add_argument("--res-leaves", type=int)
+    ap.add_argument("--res-min-data", type=int)
     ap.add_argument("--build-base", metavar="NAME", help="基礎モデルの予測を作り直して base_NAME として保存")
     ap.add_argument("--base-objective", choices=["win", "pl"], default="win")
     ap.add_argument("--base-half-life", type=float)
@@ -166,7 +181,8 @@ def main():
 
     mk = market(df, args.base)
     print(f"[{args.tag}] 基礎={args.base} 残差={args.residual} k={args.k} λ={args.lam} 段の重み={args.stage_w} "
-          f"半減期={args.half_life} 残差の学習年数={args.res_years or '2015〜'} / {mk['race_id'].nunique():,}R", flush=True)
+          f"半減期={args.half_life} 残差の学習年数={args.res_years or '2015〜'} オッズ列={args.res_market} "
+          f"葉={args.res_leaves} 最小={args.res_min_data} / {mk['race_id'].nunique():,}R", flush=True)
     results = [run_year(mk, y, args) for y in YEARS]
     races = pd.concat([r for r, _ in results], ignore_index=True)
     preds = pd.concat([p for _, p in results], ignore_index=True)
