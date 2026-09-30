@@ -16,3 +16,7 @@ run tech_t11_topk   --tag t11_topk $C --res-topk 60
 run tech_t12_split  --tag t12_split $C --res-split
 run tech_t13_adv    --tag t13_adv $C --adv-weight
 echo all-done
+# 第3弾（docs/rebuild_plan.md「技術の探索・第3弾」）
+run tech_t15_subspace --tag t15_subspace $C --res-subspace 5
+[ -f $L/tech_t14_stack.log ] || $PY -m v2.experiments.stack_runs --ref res_mkt --tag t14_stack > $L/tech_t14_stack.log 2>&1
+echo all-done-3

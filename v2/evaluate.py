@@ -17,7 +17,7 @@ import pandas as pd
 from v2.model.combined import RESIDUAL_PARAMS
 from v2.model.market import add_shin
 from v2.model.past_market import PAST_COLS, PAST_DIFF, add_past_market
-from v2.model.pipeline import (BENCH_DIR, END, SEEDS, base_file, between, fit_base, base_utility, fit_combined, load,
+from v2.model.pipeline import (BENCH_DIR, END, FEATS, MARKET_FEATS, SEEDS, base_file, between, fit_base, base_utility, fit_combined, load,
                                market, predict_combined, recency_weight, residual_trees)
 from v2.model.softmax import RaceGroups, bootstrap_ci
 from v2.paths import table_path
@@ -94,6 +94,18 @@ def fit_by_surface(tr, va, rep, common, row_w_extra, args):
     return fit, u_a, u_c
 
 
+def fit_subspace(rep, common, row_w_extra, args, frac=0.5):
+    """技術の探索 T15: 残差を列の半分を無作為に選んだ N 通りで学習し、効用を平均する（ランダム部分空間）"""
+    pool = FEATS + (MARKET_FEATS if args.res_market else [])
+    us, fit, u_a = [], None, None
+    for s in range(args.res_subspace):
+        sub = sorted(np.random.default_rng(s).choice(pool, size=int(len(pool) * frac), replace=False).tolist())
+        fit = fit_combined(*common, feats_override=sub, row_w_extra=row_w_extra, restack=args.restack)
+        u_a, u = predict_combined(fit, rep)
+        us.append(u)
+    return fit, u_a, np.mean(us, axis=0)
+
+
 def periods(year, refit):
     """報告期間の区切り。year = 年1回（従来）、quarter = 四半期ごとに学習し直す（技術の探索 T3）"""
     if refit == "quarter":
@@ -121,6 +133,8 @@ def run_year(mk, year, args, res_params=None, quiet=False):
         row_w_extra = adversarial_weight(tr, va) if args.adv_weight else None
         if args.res_split:
             fit, u_a, u_c = fit_by_surface(tr, va, rep, common, row_w_extra, args)
+        elif args.res_subspace:
+            fit, u_a, u_c = fit_subspace(rep, common, row_w_extra, args)
         else:
             fit = fit_combined(*common, row_w_extra=row_w_extra, restack=args.restack)
             if args.res_topk:
@@ -222,6 +236,7 @@ def main():
     ap.add_argument("--res-topk", type=int, help="残差を重要度の上位 N 列だけで学習し直す（T11）")
     ap.add_argument("--res-split", action="store_true", help="残差を芝とダートで別々に学習する（T12）")
     ap.add_argument("--adv-weight", action="store_true", help="敵対的検証の重みで学習する（T13）")
+    ap.add_argument("--res-subspace", type=int, help="残差を列の半分ずつ N 通りで学習して平均する（T15）")
     ap.add_argument("--res-leaves", type=int)
     ap.add_argument("--res-min-data", type=int)
     ap.add_argument("--build-base", metavar="NAME", help="基礎モデルの予測を作り直して base_NAME として保存")
