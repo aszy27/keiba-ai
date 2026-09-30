@@ -1,76 +1,28 @@
 # v2/evaluate.py
-# 候補2以降の開発用の採点（docs/rebuild_plan.md「候補2以降の開発」）。凍結した C[all] のコードは変えず、変更はここで試す。
-# 採点は年ごとの前進検証（2019〜2026-09-06）の C − A。各年 Y は
-#   基礎モデル: 学習 2013〜Y-2 / ES Y-1（3シード平均、温度を Y-1年で合わせる）
-#   残差:       学習 [Y-4, Y-1) / ES [Y-1, Y)
+# ④ 検証: 年ごとの前進検証（2019〜2026-09-06）で、モデルの変更を「現行」と同じレースで比べる（docs/rebuild_plan.md「候補2以降の開発」）。
+# 各年 Y は 基礎モデル = 学習 2013〜Y-2 / ES Y-1（3シード平均、温度を Y-1年で合わせる）、残差 = 学習 [Y-4, Y-1) / ES [Y-1, Y)。
+# 指標は C − A（1レースあたり、勝ち馬の対数尤度。A = オッズのみ、C = オッズ＋基礎モデル＋残差）。
 # 結果はレース単位で data/v2/bench/<tag>.parquet に保存し、--ref の版と同じレースで比べる（対応のある差）。
 #
 # 使い方: python -m v2.evaluate --tag current                          # 現行（C[all] と同じ作り方）。最初に1回
-#         python -m v2.evaluate --tag res_pl3 --residual pl            # 残差を 1〜3着の順序で学習
-#         python -m v2.evaluate --build-base base_pl3 --base-objective pl   # 基礎モデルを 1〜3着で学習し直す（時間がかかる）
-#         python -m v2.evaluate --tag base_pl3 --base base_pl3
-#         python -m v2.evaluate --tag res_all_hl --res-years 0 --half-life 730   # 残差の学習期間を広げ、直近を重く
+#         python -m v2.evaluate --build-base base_pl3 --base-objective pl   # 年ごとの基礎モデルの予測を作る（1時間以上）
+#         python -m v2.evaluate --tag res_mkt --base base_pl3 --res-years 0 --half-life 730 --res-market --ref pl3_all_hl730
 import argparse
 
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from v2.model import trip as mt
-from v2.model.base import PARAMS, eligible
 from v2.model.combined import RESIDUAL_PARAMS
-from v2.paths import V2_DIR, table_path
-from v2.model.plackett import PLGroups, lgb_objective_pl
-from v2.model.softmax import RaceGroups, bootstrap_ci, fit_logit, lgb_metric, lgb_objective
+from v2.model.pipeline import (BENCH_DIR, END, base_file, between, fit_base, base_utility, fit_combined, load,
+                               market, predict_combined, recency_weight)
+from v2.model.softmax import RaceGroups, bootstrap_ci
+from v2.paths import table_path
 
-END = "2026-09-07"                       # 前向き検証の期間は読み込み直後に捨てる
 YEARS = range(2019, 2027)
 BASE_YEARS = range(2015, 2027)
-BENCH_DIR = V2_DIR / "bench"
-CURRENT_BASE = V2_DIR / "base_oos_all_2015_2026.parquet"   # C[all] の基礎モデルの予測（walkforward.py --build-base）
-FEATS = mt.FEATURE_SETS["all"]
 THRESHOLDS = [1.0, 1.1, 1.2, 1.3]
-MARKET_FEATS = ["x_mkt", "mkt_rank"]     # --res-market で残差の入力に足すオッズ由来の列
-MARKET_EXTRA = {"place": ["x_place", "place_gap", "place_spread"],          # --res-market-extra で足す列
+MARKET_EXTRA = {"place": ["x_place", "place_gap", "place_spread"],          # --res-market-extra で足す列（実験5・不採用）
                 "race": ["fav_log_odds", "mkt_entropy", "n_runners"]}
-
-
-def load():
-    df = eligible(pd.read_parquet(table_path("features")))
-    return df[df["race_date"] < END].reset_index(drop=True)
-
-
-def base_file(name):
-    """"a+b" は2つの基礎モデルの予測（温度合わせ後の効用）の平均"""
-    if "+" in name:
-        path = BENCH_DIR / f"base_{name}.parquet"
-        if not path.exists():
-            parts = [pd.read_parquet(base_file(n)).set_index(["race_id", "horse_id"])["u_base"] for n in name.split("+")]
-            pd.concat(parts, axis=1, join="inner").mean(axis=1).rename("u_base").reset_index().to_parquet(path, index=False)
-        return path
-    return CURRENT_BASE if name == "current" else BENCH_DIR / f"base_{name}.parquet"
-
-
-def recency_weight(dates, end, half_life):
-    if not half_life:
-        return None
-    age = (pd.Timestamp(end) - pd.to_datetime(dates)).dt.days.to_numpy()
-    return 0.5 ** (age / half_life)
-
-
-def train(tr, va, feats, params, objective="win", k=3, lam=0.75, stage_w=None, base_tr=0.0, base_va=0.0, row_w=None):
-    """objective=win は model_combined._train と同じ。pl は 1〜k着の順序で学習する（ES は両方とも勝ち馬の対数尤度）"""
-    cats = [c for c in feats if c in mt.ft.CATEGORICAL]
-    dtr = lgb.Dataset(tr[feats], label=tr["win"], categorical_feature=cats, free_raw_data=False)
-    dva = lgb.Dataset(va[feats], label=va["win"], categorical_feature=cats, reference=dtr)
-    if objective == "win" and row_w is None:
-        obj = lgb_objective(RaceGroups(tr["race_id"], tr["win"]), base_tr)
-    else:
-        kk = 1 if objective == "win" else k
-        obj = lgb_objective_pl(PLGroups(tr["race_id"], tr["finish_pos"], kk, lam, stage_w), base_tr, row_w)
-    return lgb.train(dict(params, objective=obj), dtr, num_boost_round=5000, valid_sets=[dva],
-                     feval=lgb_metric(RaceGroups(va["race_id"], va["win"]), base_va),
-                     callbacks=[lgb.early_stopping(200, verbose=False)])
 
 
 def build_base(df, name, args):
@@ -81,34 +33,20 @@ def build_base(df, name, args):
         if part.exists():
             print(f"[{name}] {year}: 保存済み", flush=True)
             continue
-        tr = df[(df["race_date"] >= "2013-01-01") & (df["race_date"] < f"{year - 1}-01-01")].reset_index(drop=True)
-        va = df[(df["race_date"] >= f"{year - 1}-01-01") & (df["race_date"] < f"{year}-01-01")].reset_index(drop=True)
-        te = df[(df["race_date"] >= f"{year}-01-01") & (df["race_date"] < f"{year + 1}-01-01")].reset_index(drop=True)
+        tr = between(df, "2013-01-01", f"{year - 1}-01-01")
+        va = between(df, f"{year - 1}-01-01", f"{year}-01-01")
+        te = between(df, f"{year}-01-01", f"{year + 1}-01-01")
         row_w = recency_weight(tr["race_date"], f"{year - 1}-01-01", args.base_half_life)
-        u_va, u_te, rounds = 0.0, 0.0, []
-        for seed in mt.SEEDS:
-            m = train(tr, va, FEATS, dict(PARAMS, seed=seed), args.base_objective, args.k, args.lam, args.stage_w,
-                      row_w=row_w)
-            u_va = u_va + m.predict(va[FEATS], num_iteration=m.best_iteration) / len(mt.SEEDS)
-            u_te = u_te + m.predict(te[FEATS], num_iteration=m.best_iteration) / len(mt.SEEDS)
-            rounds.append(m.best_iteration)
-        beta = fit_logit(u_va, RaceGroups(va["race_id"], va["win"]))[0]
-        te[["race_id", "horse_id"]].assign(u_base=beta * u_te).to_parquet(part, index=False)
-        print(f"[{name}] {year}: 学習 {tr['race_id'].nunique()}R / 木 {rounds}本 / 温度 {beta:.3f}", flush=True)
+        models, temp = fit_base(tr, va, args.base_objective, args.k, args.lam, args.stage_w, row_w)
+        te[["race_id", "horse_id"]].assign(u_base=base_utility(models, temp, te)).to_parquet(part, index=False)
+        print(f"[{name}] {year}: 学習 {tr['race_id'].nunique()}R / 木 {[m.best_iteration for m in models]}本 / 温度 {temp:.3f}", flush=True)
     parts = [pd.read_parquet(BENCH_DIR / f"base_{name}_{y}.parquet") for y in BASE_YEARS]
     pd.concat(parts, ignore_index=True).to_parquet(base_file(name), index=False)
     print("保存:", base_file(name))
 
 
-def market(df, base):
-    orig = mt.base_path
-    mt.base_path = lambda name: base_file(base)
-    try:
-        d, _ = mt.with_market(df, "all")
-    finally:
-        mt.base_path = orig
-    d["mkt_rank"] = d.groupby("race_id")["x_mkt"].rank(ascending=False, method="min")
-    # 複勝オッズ（スナップショットにもある列）。取消などで無い馬は NaN のまま LightGBM に任せる
+def market_extra(d):
+    """実験5で試した列（複勝オッズ・レース全体のオッズの形）"""
     po = pd.read_parquet(table_path("odds_final"), columns=["race_id", "horse_number", "place_odds_min", "place_odds_max"])
     po["horse_number"] = po["horse_number"].astype(float)
     d = d.merge(po, on=["race_id", "horse_number"], how="left")
@@ -117,36 +55,29 @@ def market(df, base):
     d["x_place"] = np.log(1.0 / lo)
     d["place_gap"] = d["x_place"] - d["x_mkt"]
     d["place_spread"] = np.log(hi / lo)
-    # レース全体のオッズの形
     g = d.groupby("race_id")
     d["fav_log_odds"] = np.log(g["win_odds"].transform("min"))
-    q = np.exp(d["x_mkt"])
-    d["mkt_entropy"] = (-q * d["x_mkt"]).groupby(d["race_id"]).transform("sum")
+    d["mkt_entropy"] = (-np.exp(d["x_mkt"]) * d["x_mkt"]).groupby(d["race_id"]).transform("sum")
     d["n_runners"] = g["race_id"].transform("size")
     return d
 
 
 def run_year(mk, year, args):
     start = f"{year - 1 - args.res_years}-01-01" if args.res_years else "2015-01-01"   # 0 = 基礎モデルの予測がある2015年から全部
-    split = {"train": (start, f"{year - 1}-01-01"), "valid": (f"{year - 1}-01-01", f"{year}-01-01"),
-             "report": (f"{year}-01-01", min(f"{year + 1}-01-01", END))}
-    parts = {k: mk[(mk["race_date"] >= s) & (mk["race_date"] < e)].reset_index(drop=True) for k, (s, e) in split.items()}
-    g = {k: RaceGroups(v["race_id"], v["win"]) for k, v in parts.items()}
-    tr, rep = parts["train"], parts["report"]
-    beta_a = fit_logit(tr[["x_mkt"]].values, g["train"])
-    ll_a, p_a = g["report"].ll(rep[["x_mkt"]].values @ beta_a)
-    beta_b = fit_logit(tr[["x_mkt", "u_base"]].values, g["train"])
-    base = {k: v[["x_mkt", "u_base"]].values @ beta_b for k, v in parts.items()}
-    row_w = recency_weight(tr["race_date"], split["train"][1], args.half_life)
-    feats = FEATS + (MARKET_FEATS if args.res_market else []) + [c for k in args.res_market_extra for c in MARKET_EXTRA[k]]
+    tr = between(mk, start, f"{year - 1}-01-01")
+    va = between(mk, f"{year - 1}-01-01", f"{year}-01-01")
+    rep = between(mk, f"{year}-01-01", min(f"{year + 1}-01-01", END))
     params = dict(RESIDUAL_PARAMS, **({"num_leaves": args.res_leaves} if args.res_leaves else {}),
                   **({"min_data_in_leaf": args.res_min_data} if args.res_min_data else {}))
-    m = train(tr, parts["valid"], feats, params, args.residual, args.k, args.lam, args.stage_w,
-              base["train"], base["valid"], row_w)
-    ll_c, p_c = g["report"].ll(base["report"] + m.predict(rep[feats], num_iteration=m.best_iteration))
-    print(f"  {year}年 {len(ll_a):>5}R  C − A {np.mean(ll_c - ll_a):+.4f} / 基礎モデルの係数 {beta_b[1]:+.3f} / 木 {m.best_iteration}本",
-          flush=True)
-    races = pd.DataFrame({"race_id": rep["race_id"].iloc[g["report"].starts].to_numpy(), "year": year, "ll_a": ll_a, "ll_c": ll_c})
+    fit = fit_combined(tr, va, f"{year - 1}-01-01", args.half_life, args.res_market,
+                       [c for k in args.res_market_extra for c in MARKET_EXTRA[k]], args.residual,
+                       args.k, args.lam, args.stage_w, params)
+    u_a, u_c = predict_combined(fit, rep)
+    g = RaceGroups(rep["race_id"], rep["win"])
+    (ll_a, p_a), (ll_c, p_c) = g.ll(u_a), g.ll(u_c)
+    print(f"  {year}年 {len(ll_a):>5}R  C − A {np.mean(ll_c - ll_a):+.4f} / 基礎モデルの係数 {fit['beta_b'][1]:+.3f}"
+          f" / 木 {fit['residual'].best_iteration}本", flush=True)
+    races = pd.DataFrame({"race_id": rep["race_id"].iloc[g.starts].to_numpy(), "year": year, "ll_a": ll_a, "ll_c": ll_c})
     preds = rep[["race_id", "race_date", "horse_number", "win", "win_odds"]].assign(p_a=p_a, p_c=p_c)
     return races, preds
 
@@ -198,6 +129,8 @@ def main():
         raise SystemExit("--tag が必要")
 
     mk = market(df, args.base)
+    if args.res_market_extra:
+        mk = market_extra(mk)
     print(f"[{args.tag}] 基礎={args.base} 残差={args.residual} k={args.k} λ={args.lam} 段の重み={args.stage_w} "
           f"半減期={args.half_life} 残差の学習年数={args.res_years or '2015〜'} オッズ列={args.res_market}{args.res_market_extra or ''} "
           f"葉={args.res_leaves} 最小={args.res_min_data} / {mk['race_id'].nunique():,}R", flush=True)

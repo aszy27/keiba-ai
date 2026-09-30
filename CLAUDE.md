@@ -16,6 +16,8 @@
 > 判定前に特徴量・閾値・学習期間を変えないこと。
 > **2026-09-30: 結論が出た v2 の検証スクリプトを `v2/experiments/` に、直下の実験ログを `logs/experiments/` に移した**（処理は無変更）。
 > 文中の `v2.walkforward` や `residual_final.log` などはそちらを見る。v2 のファイル構成と手順は `README.md` の v2 の節。
+> **同日: v2 を v1 と同じ段階別に整理した。** ② `v2/data/`（ingest・features）→ ③ `v2/train.py` → ④ `v2/evaluate.py`（旧 bench.py）→ ⑤ `v2/predict.py`。
+> 候補の設定は `v2/model/candidates.py`（`c_all` = 登録済みの C[all]、`cand2` = 開発中）。前向き検証の採点・判定は `python -m v2.predict --candidate c_all [--judge]`。
 
 2026-09-11〜09-14 に「バックテストは回収率140%なのに実戦は73%」という問題を調査した結果と、
 その過程で入れた修正・残っている課題をまとめる。システム自体の説明は `README.md` を参照。

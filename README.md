@@ -22,7 +22,7 @@ V1 は着順を当てるモデルで、的中率は出ても回収率は市場�
 ```
 * 評価の指標は的中率ではなく、**勝ち馬の対数尤度が「オッズのみ」のモデルよりどれだけ良いか**と、事前に決めた期待値の閾値での回収率です。
 * 特徴量は 176列（能力・適性・近況・騎手/調教師・血統・展開・不利・当日の馬場傾向など）。
-  学習・評価・本番で同じ関数（`v2/features.py`）を使い、「未来や当日の結果を消しても特徴量が変わらない」ことをテストで確認しています。
+  学習・評価・本番で同じ関数（`v2/data/features.py`）を使い、「未来や当日の結果を消しても特徴量が変わらない」ことをテストで確認しています。
 
 ### 検証の進め方
 過去の数字を見ながら設計を直すと、その期間の成績は必ず良く見えます（V1 はこれで回収率を過大評価しました）。
@@ -46,76 +46,80 @@ V1 は着順を当てるモデルで、的中率は出ても回収率は市場�
 * 合格の条件: オッズのみとの対数尤度の差の95%区間の下限 > 0、かつ回収率 > 100%。
 * 合格しても、まず1点100円で3か月実戦し、数字が合うかを確かめてから賭け金を考えます。
 
-### データの流れ
-```text
-netkeiba ──(python -m scrape weekly)──▶ data/*.csv（旧システムと共用。v2 からは書き換えない）
-                                              │
-            data/v2/patches/（v2 側の修正）───┤
-                                              ▼
-                          python -m v2.ingest（正規化＋検査。ERROR があれば保存しない）
-                                              ▼
-              data/v2/{races,runners,payouts,odds_final,laps,training,horses,courses}.parquet
-                                              ▼
-                          python -m v2.features（176列）
-                                              ▼
-                               data/v2/features.parquet
-                                              ▼
-       python -m v2.model_trip（段階1: 年ごとの基礎モデル予測 → 段階2: オッズ結合＋残差 → 判定）
-```
+### 全体の流れ
+v1 と同じく「① スクレイプ → ② データ準備 → ③ 学習 → ④ 検証 → ⑤ 実践」の順で、入口はそれぞれ1つです。
+
+| 段階 | 入口 | やること | 出力 |
+|---|---|---|---|
+| ① スクレイプ | `python -m scrape weekly` | 結果・血統・ラップ・払戻・追い切り・オッズを取得し、欠損を補完 | `data/*.csv`（旧システムと共用） |
+| ② データ準備 | `python -m v2.data.ingest` → `python -m v2.data.features` | 旧CSVを正規化・検査して取り込み、176列の特徴量を作る | `data/v2/*.parquet` |
+| ③ 学習 | `python -m v2.train --candidate <候補>` | 候補の設定どおりに本番用のモデルを学習して保存 | `models/v2/<候補>/` |
+| ④ 検証 | `python -m v2.evaluate --tag <名前> ...` | 2019〜2026年の前進検証で、変更を現行と同じレースで比べる | `data/v2/bench/` |
+| ⑤ 実践 | `python -m v2.predict --candidate <候補>` | 発走前オッズのスナップショットで勝率・買い目を出し、前向き検証を採点 | `result/v2/` |
+
+発走前オッズのスナップショットは、開催日にタスクスケジューラが自動で取ります（`v2/live/`）。
 
 ### ファイル構成（v2）
 ```text
+scrape/                     # ① スクレイプ（旧システムと共用。下の「フォルダ構成」）
 v2/
-├── paths.py              # データの置き場所（data/v2/ 以下）と表の一覧
-├── normalize.py          # 旧CSVの表記ゆれ（馬場「稍」/「稍重」、ID の桁数など）をそろえる関数
-├── checks.py             # 取り込んだ表の検査（重複・欠損・偽レース・オッズと払戻の食い違いなど）
-├── ingest.py             # 旧CSV → data/v2/*.parquet。checks.py で ERROR があれば保存しない
-├── fetch_patches.py      # 検査で見つかった穴を netkeiba から取り直して data/v2/patches/ に置く
-├── features.py           # 特徴量を作る唯一の場所（学習・評価・本番で共通）。基本＋展開・不利
-├── features_extra.py     # 追加の特徴量（条件別スピード指数・当日バイアス・前走のレベルなど）
-├── softmax.py            # レース内ソフトマックス（条件付きロジット）・LightGBM 用の目的関数・ブートストラップ
-├── model_base.py         # 段階1: オッズを使わない基礎モデル（LightGBM）と、その学習設定
-├── model_combined.py     # 段階2: オッズ＋基礎モデル＋残差の結合。M5 最終テストもここ
-├── model_trip.py         # 現行の判定スクリプト。特徴量セット（base / trip / all）ごとに段階1・2を回す
-├── run_snapshot.ps1      # タスクスケジューラ用: 開催日に発走前オッズを取る（python -m scrape snapshot）
-├── run_snapshot_hidden.vbs  # 上の ps1 をウィンドウを出さずに起動する
-├── tests/                # リークテスト（未来や当日の結果を消しても特徴量が変わらない）・検査・正規化のテスト
-└── experiments/          # 結論が出た検証。本線からは使わない（結果は docs/rebuild_plan.md）
-    ├── feature_lab.py        # 特徴量グループを1つずつ足したときの効き（第1〜7弾）
-    ├── tune.py               # 基礎モデルの学習設定の探索
-    ├── model_family.py       # CatBoost・MLP・Transformer などモデルの種類の比較 → LightGBM のまま
-    ├── walkforward.py        # 2019〜2026年の年ごとの前進検証（単勝・複勝）。--build-base は前向き検証でも使う
-    ├── exotic_model.py       # モデルの勝率から複勝・ワイド・馬連・3連複などを期待値で買う検証
-    ├── exotic_edge.py        # 単勝オッズから見た組み合わせ券の値付けのずれ
-    ├── favorite_segments.py  # 1番人気を当てやすい条件のレースだけで買う検証
-    ├── legacy_scores.py      # 旧システムのスコアを取り出して v2 と比べる（M3）
-    └── nar/                  # 地方競馬の市場の歪みの調査（取得・パース・分析）
+├── data/                   # ② データ準備
+│   ├── ingest.py               旧CSV → data/v2/*.parquet。checks.py で ERROR があれば保存しない
+│   ├── features.py             特徴量を作る唯一の場所（学習・検証・実践で共通）。基本＋展開・不利
+│   ├── features_extra.py       追加の特徴量（条件別スピード指数・当日バイアス・前走のレベルなど）
+│   ├── normalize.py            旧CSVの表記ゆれ（馬場「稍」/「稍重」、ID の桁数など）をそろえる
+│   ├── checks.py               取り込んだ表の検査（重複・欠損・偽レース・オッズと払戻の食い違いなど）
+│   └── fetch_patches.py        検査で見つかった穴を netkeiba から取り直して data/v2/patches/ に置く
+├── model/                  # モデルの部品（学習・検証・実践で共通）
+│   ├── candidates.py           前向き検証の候補の設定（C[all]・候補2）。学習と実践はここだけを見る
+│   ├── pipeline.py             基礎モデル・オッズとの結合・残差の学習と予測
+│   ├── market.py               オッズから作る列（オッズ由来の勝率・人気順）
+│   ├── softmax.py              レース内ソフトマックス（勝ち馬の尤度）・ブートストラップ
+│   ├── plackett.py             1〜3着の順序の尤度（基礎モデルの学習に使う）
+│   └── base.py / combined.py / trip.py   C[all] を作ったときのスクリプト（M3〜M5・最終テスト。凍結）
+├── train.py                # ③ 学習
+├── evaluate.py             # ④ 検証
+├── predict.py              # ⑤ 実践
+├── live/                   # 開催日の自動実行（タスクスケジューラ keiba-odds-snapshot → run_snapshot_hidden.vbs → run_snapshot.ps1）
+├── experiments/            # 結論が出た検証。本線からは使わない（結果は docs/rebuild_plan.md）
+├── paths.py                # データの置き場所
+└── tests/                  # リークテスト（未来や当日の結果を消しても特徴量が変わらない）・検査・目的関数のテスト
 ```
-* スクレイピングは `scrape/`（旧システムと共用、下の「フォルダ構成」）、発走前オッズの保存先は `data/v2/odds_snapshots/`。
-* 実験のログはリポジトリ直下から `logs/experiments/` に移しました（`docs/rebuild_plan.md` に出てくる `*.log` はそこにあります）。
+* 実験のログは `logs/experiments/` にあります（`docs/rebuild_plan.md` に出てくる `*.log`）。
 
 ### 実行手順
-**毎週（開催の翌週の月〜火）**
+**① ② 毎週（開催の翌週の月〜火）**
 ```bash
-python -m scrape weekly      # 結果・血統・ラップ・払戻・追い切り・オッズの取得と欠損の補完
-python -m v2.ingest          # 旧CSV → data/v2/*.parquet（取り込みのたびにデータを検査）
-python -m v2.fetch_patches   # ingest の WARN にレース情報の欠損・抜けレースが出たときだけ。その後もう一度 ingest
-python -m v2.features        # 特徴量を作り直す
+python -m scrape weekly            # 結果・血統・ラップ・払戻・追い切り・オッズの取得と欠損の補完
+python -m v2.data.ingest           # 旧CSV → data/v2/*.parquet（取り込みのたびにデータを検査）
+python -m v2.data.fetch_patches    # ingest の WARN にレース情報の欠損・抜けレースが出たときだけ。その後もう一度 ingest
+python -m v2.data.features         # 特徴量を作り直す
 python -m pytest v2/tests scrape/tests
+python -m v2.predict --candidate c_all   # ⑤ 前向き検証が何Rたまったか・途中の成績
 ```
 
-**開催日（自動）**: タスクスケジューラの `keiba-odds-snapshot` が毎日 8:00 から30分おきに `v2/run_snapshot_hidden.vbs` を起動し、
-開催日なら発走60〜1分前のオッズを取ります。開催日は PC の電源を切らないでください（スリープは可）。
+**開催日（自動）**: タスクスケジューラの `keiba-odds-snapshot` が毎日 8:00 から30分おきに `v2/live/run_snapshot_hidden.vbs` を起動し、
+開催日なら発走60〜1分前のオッズを `data/v2/odds_snapshots/` に取ります。開催日は PC の電源を切らないでください（スリープは可）。
 手動で確かめるときは `python -m scrape snapshot --now --out-dir <作業用フォルダ>`。
 
-**モデルの学習と判定**（前向き検証の判定のときに実行。それまでは設定を変えない）
+**③ 学習**（候補を登録したときに1回。登録後は作り直さない）
 ```bash
-python -m v2.model_trip --build-base            # 段階1: 各年を「その年を学習していない」基礎モデルで予測（3シード平均）
-python -m v2.model_trip --sets all              # 段階2（開発）: 2019・2020年で A（オッズのみ）と C（オッズ＋基礎＋残差）を比べる
-python -m v2.model_trip --final --sets all --threshold 1.0   # 2021〜2023年の最終テスト（実施済み・合格）
-python -m v2.experiments.walkforward --build-base   # 2024〜2026年の基礎モデル予測（前向き検証の段階1に使う）
+python -m v2.train --candidate c_all
+python -m v2.train --candidate cand2
 ```
-前向き検証の判定スクリプト（スナップショットのオッズで C[all] を採点する）は、1,000R たまる前に作ります。
+
+**④ 検証**（モデルの変更を試すとき。2026-09-06 までのレースだけを使う）
+```bash
+python -m v2.evaluate --tag current                              # 現行（C[all] と同じ作り方）
+python -m v2.evaluate --build-base base_pl3 --base-objective pl  # 年ごとの基礎モデルの予測を作る（1時間以上）
+python -m v2.evaluate --tag res_mkt --base base_pl3 --res-years 0 --half-life 730 --res-market --ref pl3_all_hl730
+```
+
+**⑤ 実践・判定**（1,000R たまったら候補ごとに1回だけ。2回目は実行されない）
+```bash
+python -m v2.predict --candidate c_all --judge
+```
+※ 今の ⑤ は結果を取り込んだ後の採点です。発走前に買い目を出す（出馬表から特徴量を作る）処理はまだありません。
 
 詳しい設計・旧システムの問題点の一覧・すべての検証の記録は [`docs/rebuild_plan.md`](docs/rebuild_plan.md) にあります。
 
@@ -278,8 +282,6 @@ keiba/
 │   └── models_nn.py            # PyTorchニューラルネットワーク定義（Transformer/DAE）
 │
 ├── v2/                         # 作り直し版（詳しくは上の「ファイル構成（v2）」）
-│   ├── experiments/            # 結論が出た検証
-│   └── tests/                  # リークテストなど
 ├── docs/rebuild_plan.md        # v2 の設計・事前登録・検証の記録
 │
 ├── scrape/                     # スクレイピング（入口は python -m scrape）
