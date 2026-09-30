@@ -20,3 +20,6 @@ echo all-done
 run tech_t15_subspace --tag t15_subspace $C --res-subspace 5
 [ -f $L/tech_t14_stack.log ] || $PY -m v2.experiments.stack_runs --ref res_mkt --tag t14_stack > $L/tech_t14_stack.log 2>&1
 echo all-done-3
+# T1 の続き（DART の学習回数を固定して、終わった試行は飛ばす）
+run tech_t1_tune_b --tag t1_tune $C --tune 24
+echo all-done-t1

@@ -172,15 +172,19 @@ def two_stage(both):
 def tune(mk, args, ref):
     """技術の探索 T1: 残差のハイパーパラメータを無作為に試し、選ぶ期間だけで採点する"""
     rng = np.random.default_rng(0)
-    rows = []
+    out = BENCH_DIR / f"{args.tag}_tune.csv"
+    rows = pd.read_csv(out).to_dict("records") if out.exists() else []   # 途中で止まっても、終わった試行は飛ばす
+    done = {r["trial"] for r in rows}
     for t in range(args.tune):
         p = dict(RESIDUAL_PARAMS, learning_rate=float(rng.choice([0.01, 0.02, 0.03, 0.05])),
                  num_leaves=int(rng.choice([7, 15, 31, 63])), min_data_in_leaf=int(rng.choice([100, 200, 500, 1000, 2000])),
                  feature_fraction=float(rng.choice([0.3, 0.5, 0.7, 0.9])), bagging_fraction=float(rng.choice([0.5, 0.7, 0.8, 1.0])),
                  lambda_l1=float(rng.choice([0.0, 1.0, 10.0])), lambda_l2=float(rng.choice([1.0, 10.0, 50.0, 100.0])),
                  boosting=str(rng.choice(["gbdt", "gbdt", "gbdt", "dart"])))
-        if p["boosting"] == "dart":
-            p.update(drop_rate=0.1, skip_drop=0.5)
+        if p["boosting"] == "dart":   # DART は early stopping が効かないので学習回数を固定する
+            p.update(drop_rate=0.1, skip_drop=0.5, num_iterations=400)
+        if t in done:
+            continue
         races = pd.concat([run_year(mk, y, args, p, quiet=True)[0] for y in SELECT_YEARS], ignore_index=True)
         both = races.merge(ref, on=["race_id", "year"], suffixes=("", "_ref"))
         d = both["ll_c"] - both["ll_c_ref"]
@@ -189,8 +193,9 @@ def tune(mk, args, ref):
                 "lambda_l1", "lambda_l2", "boosting")
         rows.append(dict(trial=t, diff=d.mean(), lo=lo, hi=hi, params=json.dumps({k: p[k] for k in keys})))
         print(f"  試行{t:>2} 選ぶ期間の差 {d.mean():+.4f} [{lo:+.4f}, {hi:+.4f}] {rows[-1]['params']}", flush=True)
+        pd.DataFrame(rows).to_csv(out, index=False)
     res = pd.DataFrame(rows).sort_values("diff", ascending=False)
-    res.to_csv(BENCH_DIR / f"{args.tag}_tune.csv", index=False)
+    res.to_csv(out, index=False)
     print("最良:", res.iloc[0].to_dict())
 
 
