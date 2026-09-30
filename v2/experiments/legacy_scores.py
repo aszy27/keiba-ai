@@ -1,7 +1,7 @@
-# v2/legacy_scores.py
+# v2/experiments/legacy_scores.py
 # 旧システムの OOF キャッシュから、各馬のスコア（その期間を学習していない分割モデルの予測）だけを取り出して保存する。
 # M3 で「旧モデルより勝ち馬をよく当てるか」を同じ期間で比べるために使う。キャッシュは大きいので1回だけ実行する。
-# 使い方: python -m v2.legacy_scores
+# 使い方: python -m v2.experiments.legacy_scores
 import pandas as pd
 
 from v2.paths import LEGACY_DIR, V2_DIR

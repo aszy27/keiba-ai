@@ -1,10 +1,10 @@
-# v2/exotic_model.py
+# v2/experiments/exotic_model.py
 # モデルの勝率から組み合わせ券の確率を作り、期待値ベースで買ったときの回収率を測る
 # （docs/rebuild_plan.md「券種を広げる」）。新しいモデルは作らない。
 #   確率: Plackett-Luce（ハービル式）。1着の確率 p から「1着i・2着j・3着k」= p_i * p_j/(1-p_i) * p_k/(1-p_i-p_j)
 #   オッズ: 複勝は odds_final の下限、その他は scrape_odds_exotic.py で取った全通りの確定オッズ
 #   払戻: 当たった組み合わせのオッズ×100（ワイド・複勝は下限を使うので、実際より辛めに出る）
-# 使い方: python -m v2.exotic_model --bets place,wide,trio,trifecta,quinella
+# 使い方: python -m v2.experiments.exotic_model --bets place,wide,trio,trifecta,quinella
 import argparse
 
 import numpy as np

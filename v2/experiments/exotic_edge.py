@@ -1,11 +1,11 @@
-# v2/exotic_edge.py
+# v2/experiments/exotic_edge.py
 # 券種間の値付けのずれの検証。単勝オッズから各馬の勝率を出し、ハービル式で馬連・馬単・3連複・3連単の全組み合わせの確率を計算する。
 # 「その確率の帯（または組み合わせの荒れ度合い）に入る組み合わせを全部100円ずつ買う」ルールの回収率を、
 # 実際の払戻から計算する。回収率に要るのは的中した組み合わせの払戻だけなので、今あるデータで計算できる。
 #
 # 期間: 開発 2021〜2023年（払戻は一部のレースのみ）/ 最終テスト 2024〜2025年（docs/rebuild_plan.md「券種間の値付けのずれ」）。
-# 使い方: python -m v2.exotic_edge                    # 開発期間
-#         python -m v2.exotic_edge --period test --final   # 最終テスト（登録した1つのルールを決めてから1回だけ）
+# 使い方: python -m v2.experiments.exotic_edge                    # 開発期間
+#         python -m v2.experiments.exotic_edge --period test --final   # 最終テスト（登録した1つのルールを決めてから1回だけ）
 import argparse
 
 import numpy as np

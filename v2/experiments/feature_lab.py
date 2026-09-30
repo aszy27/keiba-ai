@@ -1,8 +1,8 @@
-# v2/feature_lab.py
+# v2/experiments/feature_lab.py
 # 追加した特徴量グループがどれだけ効くかを、開発期間だけで調べる（オッズは使わない基礎モデルの当てやすさで比較）。
 # 学習 2013〜2017 / early stopping 2018 / 報告 2019〜2020。最終テストの期間は触らない。
-# 使い方: python -m v2.feature_lab            （基準 = 既存+展開。すべてのグループを1つずつ足す）
-#         python -m v2.feature_lab --wave 5  （基準 = 第4弾までの全部入り。第5弾のグループだけを足す）
+# 使い方: python -m v2.experiments.feature_lab            （基準 = 既存+展開。すべてのグループを1つずつ足す）
+#         python -m v2.experiments.feature_lab --wave 5  （基準 = 第4弾までの全部入り。第5弾のグループだけを足す）
 import argparse
 
 import numpy as np

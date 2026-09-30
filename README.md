@@ -46,13 +46,76 @@ V1 は着順を当てるモデルで、的中率は出ても回収率は市場�
 * 合格の条件: オッズのみとの対数尤度の差の95%区間の下限 > 0、かつ回収率 > 100%。
 * 合格しても、まず1点100円で3か月実戦し、数字が合うかを確かめてから賭け金を考えます。
 
-### 毎週の手順
+### データの流れ
+```text
+netkeiba ──(python -m scrape weekly)──▶ data/*.csv（旧システムと共用。v2 からは書き換えない）
+                                              │
+            data/v2/patches/（v2 側の修正）───┤
+                                              ▼
+                          python -m v2.ingest（正規化＋検査。ERROR があれば保存しない）
+                                              ▼
+              data/v2/{races,runners,payouts,odds_final,laps,training,horses,courses}.parquet
+                                              ▼
+                          python -m v2.features（176列）
+                                              ▼
+                               data/v2/features.parquet
+                                              ▼
+       python -m v2.model_trip（段階1: 年ごとの基礎モデル予測 → 段階2: オッズ結合＋残差 → 判定）
+```
+
+### ファイル構成（v2）
+```text
+v2/
+├── paths.py              # データの置き場所（data/v2/ 以下）と表の一覧
+├── normalize.py          # 旧CSVの表記ゆれ（馬場「稍」/「稍重」、ID の桁数など）をそろえる関数
+├── checks.py             # 取り込んだ表の検査（重複・欠損・偽レース・オッズと払戻の食い違いなど）
+├── ingest.py             # 旧CSV → data/v2/*.parquet。checks.py で ERROR があれば保存しない
+├── fetch_patches.py      # 検査で見つかった穴を netkeiba から取り直して data/v2/patches/ に置く
+├── features.py           # 特徴量を作る唯一の場所（学習・評価・本番で共通）。基本＋展開・不利
+├── features_extra.py     # 追加の特徴量（条件別スピード指数・当日バイアス・前走のレベルなど）
+├── softmax.py            # レース内ソフトマックス（条件付きロジット）・LightGBM 用の目的関数・ブートストラップ
+├── model_base.py         # 段階1: オッズを使わない基礎モデル（LightGBM）と、その学習設定
+├── model_combined.py     # 段階2: オッズ＋基礎モデル＋残差の結合。M5 最終テストもここ
+├── model_trip.py         # 現行の判定スクリプト。特徴量セット（base / trip / all）ごとに段階1・2を回す
+├── run_snapshot.ps1      # タスクスケジューラ用: 開催日に発走前オッズを取る（python -m scrape snapshot）
+├── run_snapshot_hidden.vbs  # 上の ps1 をウィンドウを出さずに起動する
+├── tests/                # リークテスト（未来や当日の結果を消しても特徴量が変わらない）・検査・正規化のテスト
+└── experiments/          # 結論が出た検証。本線からは使わない（結果は docs/rebuild_plan.md）
+    ├── feature_lab.py        # 特徴量グループを1つずつ足したときの効き（第1〜7弾）
+    ├── tune.py               # 基礎モデルの学習設定の探索
+    ├── model_family.py       # CatBoost・MLP・Transformer などモデルの種類の比較 → LightGBM のまま
+    ├── walkforward.py        # 2019〜2026年の年ごとの前進検証（単勝・複勝）。--build-base は前向き検証でも使う
+    ├── exotic_model.py       # モデルの勝率から複勝・ワイド・馬連・3連複などを期待値で買う検証
+    ├── exotic_edge.py        # 単勝オッズから見た組み合わせ券の値付けのずれ
+    ├── favorite_segments.py  # 1番人気を当てやすい条件のレースだけで買う検証
+    ├── legacy_scores.py      # 旧システムのスコアを取り出して v2 と比べる（M3）
+    └── nar/                  # 地方競馬の市場の歪みの調査（取得・パース・分析）
+```
+* スクレイピングは `scrape/`（旧システムと共用、下の「フォルダ構成」）、発走前オッズの保存先は `data/v2/odds_snapshots/`。
+* 実験のログはリポジトリ直下から `logs/experiments/` に移しました（`docs/rebuild_plan.md` に出てくる `*.log` はそこにあります）。
+
+### 実行手順
+**毎週（開催の翌週の月〜火）**
 ```bash
-python -m scrape weekly     # 結果・血統・ラップ・払戻・追い切り・オッズの取得と欠損の補完
-python -m v2.ingest         # 旧CSV → data/v2/*.parquet（取り込みのたびにデータを検査。ERROR があれば保存しない）
-python -m v2.features       # 特徴量を作り直す
+python -m scrape weekly      # 結果・血統・ラップ・払戻・追い切り・オッズの取得と欠損の補完
+python -m v2.ingest          # 旧CSV → data/v2/*.parquet（取り込みのたびにデータを検査）
+python -m v2.fetch_patches   # ingest の WARN にレース情報の欠損・抜けレースが出たときだけ。その後もう一度 ingest
+python -m v2.features        # 特徴量を作り直す
 python -m pytest v2/tests scrape/tests
 ```
+
+**開催日（自動）**: タスクスケジューラの `keiba-odds-snapshot` が毎日 8:00 から30分おきに `v2/run_snapshot_hidden.vbs` を起動し、
+開催日なら発走60〜1分前のオッズを取ります。開催日は PC の電源を切らないでください（スリープは可）。
+手動で確かめるときは `python -m scrape snapshot --now --out-dir <作業用フォルダ>`。
+
+**モデルの学習と判定**（前向き検証の判定のときに実行。それまでは設定を変えない）
+```bash
+python -m v2.model_trip --build-base            # 段階1: 各年を「その年を学習していない」基礎モデルで予測（3シード平均）
+python -m v2.model_trip --sets all              # 段階2（開発）: 2019・2020年で A（オッズのみ）と C（オッズ＋基礎＋残差）を比べる
+python -m v2.model_trip --final --sets all --threshold 1.0   # 2021〜2023年の最終テスト（実施済み・合格）
+python -m v2.experiments.walkforward --build-base   # 2024〜2026年の基礎モデル予測（前向き検証の段階1に使う）
+```
+前向き検証の判定スクリプト（スナップショットのオッズで C[all] を採点する）は、1,000R たまる前に作ります。
 
 詳しい設計・旧システムの問題点の一覧・すべての検証の記録は [`docs/rebuild_plan.md`](docs/rebuild_plan.md) にあります。
 
@@ -214,7 +277,8 @@ keiba/
 │   ├── inference.py            # 高速・防弾仕様のDL（Transformer/DAE）推論エンジン
 │   └── models_nn.py            # PyTorchニューラルネットワーク定義（Transformer/DAE）
 │
-├── v2/                         # 作り直し版（データ層・特徴量・基礎モデル・オッズ結合・検証）
+├── v2/                         # 作り直し版（詳しくは上の「ファイル構成（v2）」）
+│   ├── experiments/            # 結論が出た検証
 │   └── tests/                  # リークテストなど
 ├── docs/rebuild_plan.md        # v2 の設計・事前登録・検証の記録
 │
@@ -237,6 +301,7 @@ keiba/
 ├── models/                     # 【Git管理外】学習済みモデル（.pth / .txt / .pkl / .json）
 ├── predict/                    # 【Git管理外】 predict_main.py のテキスト・CSV出力先
 ├── result/                     # 【Git管理外】モデル評価スクリプトの出力先
+├── logs/                       # 【Git管理外】スナップショット取得のログ・experiments/ に実験ログ
 │
 ├── create_course_master.py     # JRA全10場の直線長・高低差マスタ生成
 ├── train_graph_embedding.py    # 血統ネットワークのディープウォーク学習
@@ -245,6 +310,9 @@ keiba/
 ├── evaluate_main.py            # 過去の払戻金データを用いたリアル収支シミュレーター
 ├── evaluate_dump.py            # 上記＋レース単位の結果保存と診断（高配当依存度・ばらつき・実戦との一致率）
 ├── evaluate_tickets.py         # 券種別（単勝〜3連単）の回収率を自信度の閾値ごとに測定
+├── evaluate_odds_edge.py       # モデルのスコアがオッズ以上の情報を持つかの検証（2026-09-14、結論: 持たない）
+├── build_edge_dataset.py       # 「最終テスト2」用の馬単位データ（既存特徴量＋当日バイアス）を作る
+├── evaluate_residual_model.py  # オッズを出発点にした残差モデル。「最終テスト2」の判定（--split final2）に使う
 └── predict_main.py             # 最新の出馬表・追い切りを自動収集して当日の買い目を予測
 ```
 

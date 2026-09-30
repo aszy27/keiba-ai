@@ -1,10 +1,10 @@
-# v2/favorite_segments.py
+# v2/experiments/favorite_segments.py
 # 「1番人気の単勝を、当てやすい条件のレースだけで買う」とプラスになるかの検証（中央競馬）。
 # 条件は1つの軸ずつ（頭数・クラス・芝ダ・距離・馬場・競馬場・1番人気のオッズ・1/2番人気のオッズ比）で切る。
 # 開発期間で、300R以上ある条件のうち回収率の95%区間（レース単位のブートストラップ）の下限が最も高いものを機械的に選び、
 # 最終テスト期間でその1つだけを評価する（docs/rebuild_plan.md「当てやすいレースの選択」）。
-# 使い方: python -m v2.favorite_segments                                      # 開発 2021〜2023年
-#         python -m v2.favorite_segments --period test --final --segment "クラス=2勝"   # 最終テスト（1回だけ）
+# 使い方: python -m v2.experiments.favorite_segments                                      # 開発 2021〜2023年
+#         python -m v2.experiments.favorite_segments --period test --final --segment "クラス=2勝"   # 最終テスト（1回だけ）
 import argparse
 
 import numpy as np

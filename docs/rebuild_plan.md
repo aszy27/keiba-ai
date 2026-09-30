@@ -3,6 +3,12 @@
 2026-09-15 作成。旧システム（`core/`, `train_main.py` ほか）の問題の洗い出しと、それを踏まえた作り直しの設計。
 旧システムは「最終テスト2」（CLAUDE.md 参照）の判定に使うため、判定が終わるまで変更しない。
 
+> **ファイルの移動（2026-09-30、処理は無変更）:** 結論が出た検証スクリプトを `v2/experiments/` に移した
+> （`feature_lab` `tune` `model_family` `walkforward` `exotic_model` `exotic_edge` `favorite_segments` `legacy_scores` `nar/`）。
+> 以下の記録の `python -m v2.walkforward` などは `python -m v2.experiments.walkforward` と読み替える。
+> 本線（`ingest` `features` `model_base` `model_combined` `model_trip` など）は `v2/` 直下のまま。
+> また、リポジトリ直下にあった実験ログ（`*.log`）はすべて `logs/experiments/` に移した。
+
 ## 決めたこと（2026-09-15）
 
 | 項目 | 決定 | 理由 |
@@ -425,13 +431,14 @@
   - 限界: 段階1が調べたのは「オッズの値付けの偏り」だけで、特徴量を使ったモデルがオッズ以上の情報を持てるか（v2 の M4 に当たる検証）は
     地方ではしていない。ただし中央でそれが届かなかったこと、地方も値付けが同程度に正確なことから、見込みは低いと判断した。
 
-### v2 の毎週の手順（旧手順のスクレイプの後に）
+### v2 の毎週の手順（2026-09-30 更新。最新は README の「実行手順」）
 ```
+python -m scrape weekly        # 旧手順のスクレイプ
 python -m v2.ingest            # WARN にレース情報の欠損・抜けレースが出たら ↓
 python -m v2.fetch_patches     # → もう一度 python -m v2.ingest
 python -m v2.features
-python -m pytest v2/tests
-python -m v2.scrape_odds_snapshot   # 開催日の朝に起動
+python -m pytest v2/tests scrape/tests
+# 発走前オッズは タスクスケジューラ（keiba-odds-snapshot）が python -m scrape snapshot を自動で起動する
 ```
 
 ## 既存コードの扱い

@@ -1,7 +1,7 @@
-# v2/nar/parse_results.py
+# v2/experiments/nar/parse_results.py
 # data/nar/raw/*.html.gz（fetch_results.py で保存した結果ページ）をパースして、
 # data/nar/{races,runners,payouts}.parquet に保存する。
-# 使い方: python -m v2.nar.parse_results
+# 使い方: python -m v2.experiments.nar.parse_results
 import gzip
 import re
 
@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from v2.nar.fetch_results import RAW_DIR, decode
+from v2.experiments.nar.fetch_results import RAW_DIR, decode
 from v2.normalize import normalize_going
 
 OUT_DIR = RAW_DIR.parent

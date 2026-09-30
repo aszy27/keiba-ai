@@ -1,16 +1,16 @@
-# v2/nar/market_check.py
+# v2/experiments/nar/market_check.py
 # 段階1: 地方競馬の単勝市場がどれだけ歪んでいるかを、同じ期間の中央競馬と並べて調べる。
 #  1. 1レースの (1/オッズ) の合計 → 実質の払戻率
 #  2. 人気別・オッズ帯別の単勝回収率と、オッズから見込まれる勝率に対する実際の勝率
 #  3. log(オッズ由来の勝率) の係数 alpha（1から離れるほど、オッズの確率が一律にずれている）
 #  4. 「オッズのみ」の勝率を alpha で直すと対数尤度がどれだけ良くなるか（係数は期間の前半で推定し、後半で評価）
-# 使い方: python -m v2.nar.market_check [--start 2026-06-01 --end 2026-09-01]
+# 使い方: python -m v2.experiments.nar.market_check [--start 2026-06-01 --end 2026-09-01]
 import argparse
 
 import numpy as np
 import pandas as pd
 
-from v2.nar.parse_results import OUT_DIR
+from v2.experiments.nar.parse_results import OUT_DIR
 from v2.paths import table_path
 from v2.softmax import RaceGroups, bootstrap_ci, fit_logit
 

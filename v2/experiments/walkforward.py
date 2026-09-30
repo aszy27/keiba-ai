@@ -1,4 +1,4 @@
-# v2/walkforward.py
+# v2/experiments/walkforward.py
 # 年ごとの前進検証。各年 Y を「その年を学習していないモデル」で採点し、単勝・複勝の回収率を年別と通算で出す。
 #   基礎モデル: 年ごとのOOS予測（学習 2013〜Y-2 / early stopping Y-1、3シード平均）
 #   オッズ結合: 残差モデルを 学習 [Y-4, Y-1) / early stopping [Y-1, Y) で学習し、Y年で採点
@@ -6,14 +6,14 @@
 #   対照: オッズだけから作った確率（p_a）でも同じ買い方をして並べる
 # 2026-09-07以降（前向き検証の期間）は使わない。
 #
-# 使い方: python -m v2.walkforward --build-base   # 2024〜2026年の基礎モデル予測を作る（初回だけ）
-#         python -m v2.walkforward
+# 使い方: python -m v2.experiments.walkforward --build-base   # 2024〜2026年の基礎モデル予測を作る（初回だけ）
+#         python -m v2.experiments.walkforward
 import argparse
 
 import numpy as np
 import pandas as pd
 
-from v2 import exotic_model as em
+from v2.experiments import exotic_model as em
 from v2 import model_trip as mt
 from v2.model_base import PARAMS, eligible
 from v2.paths import V2_DIR, table_path

@@ -1,8 +1,8 @@
-# v2/nar/fetch_results.py
+# v2/experiments/nar/fetch_results.py
 # 地方競馬（netkeiba 地方版）の結果ページを日付の範囲で取得し、HTML をそのまま data/nar/raw/<race_id>.html.gz に保存する。
 # 結果ページ1枚に 着順・馬番・騎手・タイム・人気・確定単勝オッズ・全券種の払戻 がそろっているため、1レース1リクエスト。
 # 保存済みのレースは飛ばすので、止まっても再実行で続きから取れる。ばんえい（帯広）は除く。
-# 使い方: python -m v2.nar.fetch_results --start 2026-06-01 --end 2026-08-31
+# 使い方: python -m v2.experiments.nar.fetch_results --start 2026-06-01 --end 2026-08-31
 import argparse
 import gzip
 import random

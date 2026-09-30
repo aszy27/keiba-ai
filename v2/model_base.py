@@ -2,7 +2,7 @@
 # M3: オッズを使わない基礎モデル。LightGBM のレース内ソフトマックスで勝ち馬を予測する。
 #  - 学習 2013〜2018 / early stopping 2019 / 評価 2020（2012年は過去成績が溜まっていないので学習に使わない）
 #  - 2019年で係数（温度）を合わせてから 2020年の勝ち馬の対数尤度を出す
-#  - 旧モデルの OOF スコア（v2/legacy_scores.py）があれば、同じレースで比べる
+#  - 旧モデルの OOF スコア（v2/experiments/legacy_scores.py）があれば、同じレースで比べる
 #  - --ablation で特徴量グループを1つずつ外したときの差を出す
 # 使い方: python -m v2.model_base [--ablation]
 import argparse
@@ -67,7 +67,7 @@ def calibration_table(p, win):
 
 def legacy_comparison(parts, u_valid, u_test):
     if not LEGACY.exists():
-        print("\n旧モデルの OOF スコアが無いため比較を省略（python -m v2.legacy_scores で作成）")
+        print("\n旧モデルの OOF スコアが無いため比較を省略（python -m v2.experiments.legacy_scores で作成）")
         return
     old = pd.read_parquet(LEGACY)
     sub = {}

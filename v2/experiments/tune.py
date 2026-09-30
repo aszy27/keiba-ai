@@ -1,9 +1,9 @@
-# v2/tune.py
+# v2/experiments/tune.py
 # 基礎モデル（オッズなし）の学習設定を開発期間だけで調整する。
 #   段階A: 学習 2013〜2016 / early stopping 2017 / 採点 2018 でランダム探索（報告年 2019〜2020 は使わない）
 #   段階B: 見つかった設定を 2019〜2020 で現行設定と比べる（1回だけ）
 # 探索するもの: LightGBM のパラメータ、直近重視の重み付け（半減期）、複数シードの平均。
-# 使い方: python -m v2.tune --trials 24
+# 使い方: python -m v2.experiments.tune --trials 24
 import argparse
 import random
 

@@ -1,4 +1,4 @@
-# v2/model_family.py
+# v2/experiments/model_family.py
 # 基礎モデルの種類を比べる（docs/rebuild_plan.md「モデルの種類の比較」）。特徴量は176列で固定し、モデルだけ差し替える。
 #   --stage1 : オッズ抜きの当てやすさ。学習 2013〜2017 / ES 2018 / 報告 2019〜2020 で各種類と混合を比べる
 #   --stage2 : オッズへの上積み。選んだ種類の年ごとのOOS予測を作り、LightGBM(3シード) と混ぜた基礎モデルで
@@ -8,8 +8,8 @@
 #   dae ノイズ除去オートエンコーダで作った表現を足した MLP（Porto Seguro 1位解法と同じ考え方）
 #   emb 騎手・調教師のIDを埋め込みにした MLP
 #   set 出走馬全体を1つの集合として見る Transformer（他馬との比較を直接学習する）
-# 使い方: python -m v2.model_family --stage1
-#         python -m v2.model_family --stage2 --families mlp,set
+# 使い方: python -m v2.experiments.model_family --stage1
+#         python -m v2.experiments.model_family --stage2 --families mlp,set
 import argparse
 
 import lightgbm as lgb
