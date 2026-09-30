@@ -13,8 +13,9 @@ import numpy as np
 import pandas as pd
 
 from v2.model.combined import RESIDUAL_PARAMS
-from v2.model.pipeline import (BENCH_DIR, END, base_file, between, fit_base, base_utility, fit_combined, load,
-                               market, predict_combined, recency_weight)
+from v2.model.past_market import PAST_COLS, PAST_DIFF, add_past_market
+from v2.model.pipeline import (BENCH_DIR, END, SEEDS, base_file, between, fit_base, base_utility, fit_combined, load,
+                               market, predict_combined, recency_weight, residual_trees)
 from v2.model.softmax import RaceGroups, bootstrap_ci
 from v2.paths import table_path
 
@@ -70,13 +71,13 @@ def run_year(mk, year, args):
     params = dict(RESIDUAL_PARAMS, **({"num_leaves": args.res_leaves} if args.res_leaves else {}),
                   **({"min_data_in_leaf": args.res_min_data} if args.res_min_data else {}))
     fit = fit_combined(tr, va, f"{year - 1}-01-01", args.half_life, args.res_market,
-                       [c for k in args.res_market_extra for c in MARKET_EXTRA[k]], args.residual,
-                       args.k, args.lam, args.stage_w, params)
+                       [c for k in args.res_market_extra for c in MARKET_EXTRA[k]] + (PAST_COLS + PAST_DIFF if args.past_mkt else []),
+                       args.residual, args.k, args.lam, args.stage_w, params, SEEDS if args.res_seeds else None)
     u_a, u_c = predict_combined(fit, rep)
     g = RaceGroups(rep["race_id"], rep["win"])
     (ll_a, p_a), (ll_c, p_c) = g.ll(u_a), g.ll(u_c)
     print(f"  {year}年 {len(ll_a):>5}R  C − A {np.mean(ll_c - ll_a):+.4f} / 基礎モデルの係数 {fit['beta_b'][1]:+.3f}"
-          f" / 木 {fit['residual'].best_iteration}本", flush=True)
+          f" / 木 {residual_trees(fit)}本", flush=True)
     races = pd.DataFrame({"race_id": rep["race_id"].iloc[g.starts].to_numpy(), "year": year, "ll_a": ll_a, "ll_c": ll_c})
     preds = rep[["race_id", "race_date", "horse_number", "win", "win_odds"]].assign(p_a=p_a, p_c=p_c)
     return races, preds
@@ -110,6 +111,8 @@ def main():
     ap.add_argument("--res-years", type=int, default=3, help="残差の学習に使う年数（0 = 2015年から全部）")
     ap.add_argument("--res-market", action="store_true", help="残差の入力にオッズ由来の列（MARKET_FEATS）を足す")
     ap.add_argument("--res-market-extra", type=lambda s: s.split(","), default=[], help="place / race（カンマ区切り）")
+    ap.add_argument("--res-seeds", action="store_true", help="残差を3シードで学習して平均する（実験6）")
+    ap.add_argument("--past-mkt", action="store_true", help="残差の入力に過去の走の市場評価を足す（実験6）")
     ap.add_argument("--res-leaves", type=int)
     ap.add_argument("--res-min-data", type=int)
     ap.add_argument("--build-base", metavar="NAME", help="基礎モデルの予測を作り直して base_NAME として保存")
@@ -131,9 +134,11 @@ def main():
     mk = market(df, args.base)
     if args.res_market_extra:
         mk = market_extra(mk)
+    if args.past_mkt:
+        mk = add_past_market(mk)
     print(f"[{args.tag}] 基礎={args.base} 残差={args.residual} k={args.k} λ={args.lam} 段の重み={args.stage_w} "
           f"半減期={args.half_life} 残差の学習年数={args.res_years or '2015〜'} オッズ列={args.res_market}{args.res_market_extra or ''} "
-          f"葉={args.res_leaves} 最小={args.res_min_data} / {mk['race_id'].nunique():,}R", flush=True)
+          f"葉={args.res_leaves} 最小={args.res_min_data} 残差3シード={args.res_seeds} 過去の市場評価={args.past_mkt} / {mk['race_id'].nunique():,}R", flush=True)
     results = [run_year(mk, y, args) for y in YEARS]
     races = pd.concat([r for r, _ in results], ignore_index=True)
     preds = pd.concat([p for _, p in results], ignore_index=True)

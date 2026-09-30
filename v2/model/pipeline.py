@@ -94,23 +94,34 @@ def market(df, base):
 
 
 def fit_combined(tr, va, weight_end=None, half_life=None, market_cols=False, extra_cols=(), res_objective="win",
-                 k=3, lam=0.75, stage_w=None, res_params=None):
+                 k=3, lam=0.75, stage_w=None, res_params=None, res_seeds=None):
     """A（オッズのみ）・B（オッズ＋基礎モデル）の係数と残差モデルを学習する。
     tr / va は market() の表（x_mkt, u_base 付き）。half_life は weight_end（学習期間の終わり）を基準にした直近重視。
+    res_seeds を渡すと残差をシードごとに学習して予測を平均する（residual はモデルの一覧になる）。
     返り値: dict(beta_a, beta_b, residual, feats)"""
     g_tr = RaceGroups(tr["race_id"], tr["win"])
     beta_a = fit_logit(tr[["x_mkt"]].values, g_tr)
     beta_b = fit_logit(tr[["x_mkt", "u_base"]].values, g_tr)
     feats = FEATS + (MARKET_FEATS if market_cols else []) + list(extra_cols)
     row_w = recency_weight(tr["race_date"], weight_end, half_life)
-    res = train(tr, va, feats, res_params or RESIDUAL_PARAMS, res_objective, k, lam, stage_w,
-                tr[["x_mkt", "u_base"]].values @ beta_b, va[["x_mkt", "u_base"]].values @ beta_b, row_w)
+    params = res_params or RESIDUAL_PARAMS
+    args = (res_objective, k, lam, stage_w, tr[["x_mkt", "u_base"]].values @ beta_b, va[["x_mkt", "u_base"]].values @ beta_b, row_w)
+    if res_seeds:
+        res = [train(tr, va, feats, dict(params, seed=s), *args) for s in res_seeds]
+    else:
+        res = train(tr, va, feats, params, *args)
     return dict(beta_a=beta_a, beta_b=beta_b, residual=res, feats=feats)
+
+
+def residual_trees(fit):
+    r = fit["residual"]
+    return [m.best_iteration for m in r] if isinstance(r, list) else r.best_iteration
 
 
 def predict_combined(fit, d):
     """p_a（オッズのみ）と p_c（オッズ＋基礎モデル＋残差）の効用を返す"""
     u_a = d[["x_mkt"]].values @ fit["beta_a"]
-    u_c = d[["x_mkt", "u_base"]].values @ fit["beta_b"] + fit["residual"].predict(
-        d[fit["feats"]], num_iteration=fit["residual"].best_iteration or None)
+    res = fit["residual"] if isinstance(fit["residual"], list) else [fit["residual"]]
+    u_c = d[["x_mkt", "u_base"]].values @ fit["beta_b"] + sum(
+        m.predict(d[fit["feats"]], num_iteration=m.best_iteration or None) for m in res) / len(res)
     return u_a, u_c
