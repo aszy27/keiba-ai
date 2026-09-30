@@ -10,10 +10,12 @@
 import argparse
 import json
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
 from v2.model.combined import RESIDUAL_PARAMS
+from v2.model.market import add_shin
 from v2.model.past_market import PAST_COLS, PAST_DIFF, add_past_market
 from v2.model.pipeline import (BENCH_DIR, END, SEEDS, base_file, between, fit_base, base_utility, fit_combined, load,
                                market, predict_combined, recency_weight, residual_trees)
@@ -64,6 +66,34 @@ def market_extra(d):
     return d
 
 
+def adversarial_weight(tr, va, lo=0.2, hi=5.0):
+    """技術の探索 T13: 学習期間の行と ES の年の行を見分ける分類器で、ES の年に似た行ほど重くする（重み p/(1−p)・行数の比、lo〜hi で切る）"""
+    from v2.model.pipeline import FEATS
+    X = pd.concat([tr[FEATS], va[FEATS]], ignore_index=True)
+    y = np.r_[np.zeros(len(tr)), np.ones(len(va))]
+    cats = [c for c in FEATS if str(X[c].dtype) == "category"]
+    m = lgb.train(dict(objective="binary", learning_rate=0.05, num_leaves=31, min_data_in_leaf=500, feature_fraction=0.7,
+                       verbose=-1, seed=0), lgb.Dataset(X, y, categorical_feature=cats), num_boost_round=200)
+    p = np.clip(m.predict(tr[FEATS]), 1e-6, 1 - 1e-6)
+    return np.clip(p / (1 - p) * len(tr) / len(va), lo, hi)
+
+
+def fit_by_surface(tr, va, rep, common, row_w_extra, args):
+    """技術の探索 T12: 残差を芝（障害を含む）とダートで別々に学習する"""
+    is_dirt = {k: (v["surface"].astype(str) == "ダート").to_numpy() for k, v in (("tr", tr), ("va", va), ("rep", rep))}
+    u_a, u_c = np.zeros(len(rep)), np.zeros(len(rep))
+    fit = None
+    for flag in (False, True):
+        t, v, r = tr[is_dirt["tr"] == flag], va[is_dirt["va"] == flag], rep[is_dirt["rep"] == flag]
+        t, v, r = (x.reset_index(drop=True) for x in (t, v, r))
+        c = (t, v) + common[2:]
+        w = None if row_w_extra is None else row_w_extra[is_dirt["tr"] == flag]
+        fit = fit_combined(*c, row_w_extra=w, restack=args.restack)
+        a, cc = predict_combined(fit, r)
+        u_a[is_dirt["rep"] == flag], u_c[is_dirt["rep"] == flag] = a, cc
+    return fit, u_a, u_c
+
+
 def periods(year, refit):
     """報告期間の区切り。year = 年1回（従来）、quarter = 四半期ごとに学習し直す（技術の探索 T3）"""
     if refit == "quarter":
@@ -76,17 +106,28 @@ def periods(year, refit):
 def run_year(mk, year, args, res_params=None, quiet=False):
     params = res_params or dict(RESIDUAL_PARAMS, **({"num_leaves": args.res_leaves} if args.res_leaves else {}),
                                 **({"min_data_in_leaf": args.res_min_data} if args.res_min_data else {}))
-    b_cols = ["x_mkt"] if args.no_base else ["x_mkt", "u_base"] + (["u_base2"] if args.base2 else [])
-    extra = [c for k in args.res_market_extra for c in MARKET_EXTRA[k]] + (PAST_COLS + PAST_DIFF if args.past_mkt else [])
+    x = "x_shin" if args.shin else "x_mkt"
+    b_cols = [x] if args.no_base else [x, "u_base"] + (["u_base2"] if args.base2 else [])
+    extra = ([c for k in args.res_market_extra for c in MARKET_EXTRA[k]] + (PAST_COLS + PAST_DIFF if args.past_mkt else [])
+             + (["x_shin", "shin_z"] if args.shin else []))
     races, preds = [], []
     for rs, re_ in periods(year, args.refit):
         cut = pd.Timestamp(rs)
         es_start = f"{cut.year - 1}-{cut.month:02d}-01"
         start = f"{cut.year - 1 - args.res_years}-{cut.month:02d}-01" if args.res_years else "2015-01-01"   # 0 = 2015年から全部
         tr, va, rep = between(mk, start, es_start), between(mk, es_start, rs), between(mk, rs, re_)
-        fit = fit_combined(tr, va, es_start, args.half_life, args.res_market, extra, args.residual, args.k, args.lam,
-                           args.stage_w, params, SEEDS if args.res_seeds else None, b_cols, args.temp)
-        u_a, u_c = predict_combined(fit, rep)
+        common = (tr, va, es_start, args.half_life, args.res_market, extra, args.residual, args.k, args.lam,
+                  args.stage_w, params, SEEDS if args.res_seeds else None, b_cols, args.temp)
+        row_w_extra = adversarial_weight(tr, va) if args.adv_weight else None
+        if args.res_split:
+            fit, u_a, u_c = fit_by_surface(tr, va, rep, common, row_w_extra, args)
+        else:
+            fit = fit_combined(*common, row_w_extra=row_w_extra, restack=args.restack)
+            if args.res_topk:
+                imp = pd.Series(fit["residual"].feature_importance("gain"), index=fit["feats"]).sort_values(ascending=False)
+                fit = fit_combined(*common, feats_override=list(imp.index[:args.res_topk]), row_w_extra=row_w_extra,
+                                   restack=args.restack)
+            u_a, u_c = predict_combined(fit, rep)
         g = RaceGroups(rep["race_id"], rep["win"])
         (ll_a, p_a), (ll_c, p_c) = g.ll(u_a), g.ll(u_c)
         if not quiet:
@@ -176,6 +217,11 @@ def main():
     ap.add_argument("--refit", choices=["year", "quarter"], default="year", help="残差を学習し直す間隔（T3）")
     ap.add_argument("--tune", type=int, help="残差のハイパーパラメータを N 通り試す（T1。選ぶ期間だけで採点）")
     ap.add_argument("--res-params", type=json.loads, help="残差のハイパーパラメータ（JSON。RESIDUAL_PARAMS を上書き）")
+    ap.add_argument("--shin", action="store_true", help="Shin の確率を出発点と残差の入力に使う（T8）")
+    ap.add_argument("--restack", action="store_true", help="ES の期間で B と残差の係数を推定し直す（T9）")
+    ap.add_argument("--res-topk", type=int, help="残差を重要度の上位 N 列だけで学習し直す（T11）")
+    ap.add_argument("--res-split", action="store_true", help="残差を芝とダートで別々に学習する（T12）")
+    ap.add_argument("--adv-weight", action="store_true", help="敵対的検証の重みで学習する（T13）")
     ap.add_argument("--res-leaves", type=int)
     ap.add_argument("--res-min-data", type=int)
     ap.add_argument("--build-base", metavar="NAME", help="基礎モデルの予測を作り直して base_NAME として保存")
@@ -203,6 +249,8 @@ def main():
         mk = market_extra(mk)
     if args.past_mkt:
         mk = add_past_market(mk)
+    if args.shin:
+        mk = add_shin(mk)
     print(f"[{args.tag}] 基礎={args.base} 残差={args.residual} k={args.k} λ={args.lam} 段の重み={args.stage_w} "
           f"半減期={args.half_life} 残差の学習年数={args.res_years or '2015〜'} オッズ列={args.res_market}{args.res_market_extra or ''} "
           f"葉={args.res_leaves} 最小={args.res_min_data} 残差3シード={args.res_seeds} 過去の市場評価={args.past_mkt} "
