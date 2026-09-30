@@ -94,23 +94,29 @@ def market(df, base):
 
 
 def fit_combined(tr, va, weight_end=None, half_life=None, market_cols=False, extra_cols=(), res_objective="win",
-                 k=3, lam=0.75, stage_w=None, res_params=None, res_seeds=None):
+                 k=3, lam=0.75, stage_w=None, res_params=None, res_seeds=None, b_cols=("x_mkt", "u_base"), temp=False):
     """A（オッズのみ）・B（オッズ＋基礎モデル）の係数と残差モデルを学習する。
     tr / va は market() の表（x_mkt, u_base 付き）。half_life は weight_end（学習期間の終わり）を基準にした直近重視。
     res_seeds を渡すと残差をシードごとに学習して予測を平均する（residual はモデルの一覧になる）。
+    b_cols は B（出発点）の変数。temp=True なら最後に C の効用に掛ける温度を va で最尤推定する。
     返り値: dict(beta_a, beta_b, residual, feats)"""
     g_tr = RaceGroups(tr["race_id"], tr["win"])
     beta_a = fit_logit(tr[["x_mkt"]].values, g_tr)
-    beta_b = fit_logit(tr[["x_mkt", "u_base"]].values, g_tr)
+    b_cols = list(b_cols)
+    beta_b = fit_logit(tr[b_cols].values, g_tr)
     feats = FEATS + (MARKET_FEATS if market_cols else []) + list(extra_cols)
     row_w = recency_weight(tr["race_date"], weight_end, half_life)
     params = res_params or RESIDUAL_PARAMS
-    args = (res_objective, k, lam, stage_w, tr[["x_mkt", "u_base"]].values @ beta_b, va[["x_mkt", "u_base"]].values @ beta_b, row_w)
+    args = (res_objective, k, lam, stage_w, tr[b_cols].values @ beta_b, va[b_cols].values @ beta_b, row_w)
     if res_seeds:
         res = [train(tr, va, feats, dict(params, seed=s), *args) for s in res_seeds]
     else:
         res = train(tr, va, feats, params, *args)
-    return dict(beta_a=beta_a, beta_b=beta_b, residual=res, feats=feats)
+    fit = dict(beta_a=beta_a, beta_b=beta_b, residual=res, feats=feats, b_cols=b_cols, temp=1.0)
+    if temp:
+        _, u_va = predict_combined(fit, va)
+        fit["temp"] = float(fit_logit(u_va, RaceGroups(va["race_id"], va["win"]))[0])
+    return fit
 
 
 def residual_trees(fit):
@@ -122,6 +128,6 @@ def predict_combined(fit, d):
     """p_a（オッズのみ）と p_c（オッズ＋基礎モデル＋残差）の効用を返す"""
     u_a = d[["x_mkt"]].values @ fit["beta_a"]
     res = fit["residual"] if isinstance(fit["residual"], list) else [fit["residual"]]
-    u_c = d[["x_mkt", "u_base"]].values @ fit["beta_b"] + sum(
+    u_c = d[fit.get("b_cols", ["x_mkt", "u_base"])].values @ fit["beta_b"] + sum(
         m.predict(d[fit["feats"]], num_iteration=m.best_iteration or None) for m in res) / len(res)
-    return u_a, u_c
+    return u_a, u_c * fit.get("temp", 1.0)

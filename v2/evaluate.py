@@ -8,6 +8,7 @@
 #         python -m v2.evaluate --build-base base_pl3 --base-objective pl   # 年ごとの基礎モデルの予測を作る（1時間以上）
 #         python -m v2.evaluate --tag res_mkt --base base_pl3 --res-years 0 --half-life 730 --res-market --ref pl3_all_hl730
 import argparse
+import json
 
 import numpy as np
 import pandas as pd
@@ -63,24 +64,79 @@ def market_extra(d):
     return d
 
 
-def run_year(mk, year, args):
-    start = f"{year - 1 - args.res_years}-01-01" if args.res_years else "2015-01-01"   # 0 = 基礎モデルの予測がある2015年から全部
-    tr = between(mk, start, f"{year - 1}-01-01")
-    va = between(mk, f"{year - 1}-01-01", f"{year}-01-01")
-    rep = between(mk, f"{year}-01-01", min(f"{year + 1}-01-01", END))
-    params = dict(RESIDUAL_PARAMS, **({"num_leaves": args.res_leaves} if args.res_leaves else {}),
-                  **({"min_data_in_leaf": args.res_min_data} if args.res_min_data else {}))
-    fit = fit_combined(tr, va, f"{year - 1}-01-01", args.half_life, args.res_market,
-                       [c for k in args.res_market_extra for c in MARKET_EXTRA[k]] + (PAST_COLS + PAST_DIFF if args.past_mkt else []),
-                       args.residual, args.k, args.lam, args.stage_w, params, SEEDS if args.res_seeds else None)
-    u_a, u_c = predict_combined(fit, rep)
-    g = RaceGroups(rep["race_id"], rep["win"])
-    (ll_a, p_a), (ll_c, p_c) = g.ll(u_a), g.ll(u_c)
-    print(f"  {year}年 {len(ll_a):>5}R  C − A {np.mean(ll_c - ll_a):+.4f} / 基礎モデルの係数 {fit['beta_b'][1]:+.3f}"
-          f" / 木 {residual_trees(fit)}本", flush=True)
-    races = pd.DataFrame({"race_id": rep["race_id"].iloc[g.starts].to_numpy(), "year": year, "ll_a": ll_a, "ll_c": ll_c})
-    preds = rep[["race_id", "race_date", "horse_number", "win", "win_odds"]].assign(p_a=p_a, p_c=p_c)
-    return races, preds
+def periods(year, refit):
+    """報告期間の区切り。year = 年1回（従来）、quarter = 四半期ごとに学習し直す（技術の探索 T3）"""
+    if refit == "quarter":
+        starts = [f"{year}-{m:02d}-01" for m in (1, 4, 7, 10)]
+        ends = starts[1:] + [f"{year + 1}-01-01"]
+        return [(s, min(e, END)) for s, e in zip(starts, ends) if s < END]
+    return [(f"{year}-01-01", min(f"{year + 1}-01-01", END))]
+
+
+def run_year(mk, year, args, res_params=None, quiet=False):
+    params = res_params or dict(RESIDUAL_PARAMS, **({"num_leaves": args.res_leaves} if args.res_leaves else {}),
+                                **({"min_data_in_leaf": args.res_min_data} if args.res_min_data else {}))
+    b_cols = ["x_mkt"] if args.no_base else ["x_mkt", "u_base"] + (["u_base2"] if args.base2 else [])
+    extra = [c for k in args.res_market_extra for c in MARKET_EXTRA[k]] + (PAST_COLS + PAST_DIFF if args.past_mkt else [])
+    races, preds = [], []
+    for rs, re_ in periods(year, args.refit):
+        cut = pd.Timestamp(rs)
+        es_start = f"{cut.year - 1}-{cut.month:02d}-01"
+        start = f"{cut.year - 1 - args.res_years}-{cut.month:02d}-01" if args.res_years else "2015-01-01"   # 0 = 2015年から全部
+        tr, va, rep = between(mk, start, es_start), between(mk, es_start, rs), between(mk, rs, re_)
+        fit = fit_combined(tr, va, es_start, args.half_life, args.res_market, extra, args.residual, args.k, args.lam,
+                           args.stage_w, params, SEEDS if args.res_seeds else None, b_cols, args.temp)
+        u_a, u_c = predict_combined(fit, rep)
+        g = RaceGroups(rep["race_id"], rep["win"])
+        (ll_a, p_a), (ll_c, p_c) = g.ll(u_a), g.ll(u_c)
+        if not quiet:
+            print(f"  {rs}〜 {len(ll_a):>5}R  C − A {np.mean(ll_c - ll_a):+.4f} / B の係数 {np.round(fit['beta_b'], 3).tolist()}"
+                  f" / 木 {residual_trees(fit)}本 / 温度 {fit['temp']:.3f}", flush=True)
+        races.append(pd.DataFrame({"race_id": rep["race_id"].iloc[g.starts].to_numpy(), "year": year, "ll_a": ll_a, "ll_c": ll_c}))
+        preds.append(rep[["race_id", "race_date", "horse_number", "win", "win_odds"]].assign(p_a=p_a, p_c=p_c))
+    return pd.concat(races, ignore_index=True), pd.concat(preds, ignore_index=True)
+
+
+SELECT_YEARS, CONFIRM_YEARS = range(2019, 2023), range(2023, 2027)   # 技術の探索の2段階（docs/rebuild_plan.md）
+
+
+def two_stage(both):
+    """選ぶ期間（95%下限 > 0）と確かめる期間（90%区間の下限 > 0）での、同じレースの C の差"""
+    d = both["ll_c"] - both["ll_c_ref"]
+    sel, con = d[both["year"].isin(SELECT_YEARS)], d[both["year"].isin(CONFIRM_YEARS)]
+    out = []
+    if len(sel):
+        lo, hi = bootstrap_ci(sel)
+        out.append(f"選ぶ期間 2019〜2022 {sel.mean():+.4f} [95% {lo:+.4f}, {hi:+.4f}] → {'通過' if lo > 0 else '不通過'}")
+    if len(con):
+        lo, hi = bootstrap_ci(con, level=0.90)
+        out.append(f"確かめる期間 2023〜2026 {con.mean():+.4f} [90% {lo:+.4f}, {hi:+.4f}] → {'確認' if lo > 0 else '未確認'}")
+    return out
+
+
+def tune(mk, args, ref):
+    """技術の探索 T1: 残差のハイパーパラメータを無作為に試し、選ぶ期間だけで採点する"""
+    rng = np.random.default_rng(0)
+    rows = []
+    for t in range(args.tune):
+        p = dict(RESIDUAL_PARAMS, learning_rate=float(rng.choice([0.01, 0.02, 0.03, 0.05])),
+                 num_leaves=int(rng.choice([7, 15, 31, 63])), min_data_in_leaf=int(rng.choice([100, 200, 500, 1000, 2000])),
+                 feature_fraction=float(rng.choice([0.3, 0.5, 0.7, 0.9])), bagging_fraction=float(rng.choice([0.5, 0.7, 0.8, 1.0])),
+                 lambda_l1=float(rng.choice([0.0, 1.0, 10.0])), lambda_l2=float(rng.choice([1.0, 10.0, 50.0, 100.0])),
+                 boosting=str(rng.choice(["gbdt", "gbdt", "gbdt", "dart"])))
+        if p["boosting"] == "dart":
+            p.update(drop_rate=0.1, skip_drop=0.5)
+        races = pd.concat([run_year(mk, y, args, p, quiet=True)[0] for y in SELECT_YEARS], ignore_index=True)
+        both = races.merge(ref, on=["race_id", "year"], suffixes=("", "_ref"))
+        d = both["ll_c"] - both["ll_c_ref"]
+        lo, hi = bootstrap_ci(d)
+        keys = ("learning_rate", "num_leaves", "min_data_in_leaf", "feature_fraction", "bagging_fraction",
+                "lambda_l1", "lambda_l2", "boosting")
+        rows.append(dict(trial=t, diff=d.mean(), lo=lo, hi=hi, params=json.dumps({k: p[k] for k in keys})))
+        print(f"  試行{t:>2} 選ぶ期間の差 {d.mean():+.4f} [{lo:+.4f}, {hi:+.4f}] {rows[-1]['params']}", flush=True)
+    res = pd.DataFrame(rows).sort_values("diff", ascending=False)
+    res.to_csv(BENCH_DIR / f"{args.tag}_tune.csv", index=False)
+    print("最良:", res.iloc[0].to_dict())
 
 
 def show(label, d):
@@ -113,6 +169,13 @@ def main():
     ap.add_argument("--res-market-extra", type=lambda s: s.split(","), default=[], help="place / race（カンマ区切り）")
     ap.add_argument("--res-seeds", action="store_true", help="残差を3シードで学習して平均する（実験6）")
     ap.add_argument("--past-mkt", action="store_true", help="残差の入力に過去の走の市場評価を足す（実験6）")
+    ap.add_argument("--years", help="採点する年（例 2019-2022）。既定は 2019〜2026")
+    ap.add_argument("--temp", action="store_true", help="C の効用に掛ける温度を ES の期間で合わせる（T2）")
+    ap.add_argument("--base2", help="2つ目の基礎モデルの予測を B の段に別の変数として足す（T5）")
+    ap.add_argument("--no-base", action="store_true", help="基礎モデルを使わない1段階の構成（T6）")
+    ap.add_argument("--refit", choices=["year", "quarter"], default="year", help="残差を学習し直す間隔（T3）")
+    ap.add_argument("--tune", type=int, help="残差のハイパーパラメータを N 通り試す（T1。選ぶ期間だけで採点）")
+    ap.add_argument("--res-params", type=json.loads, help="残差のハイパーパラメータ（JSON。RESIDUAL_PARAMS を上書き）")
     ap.add_argument("--res-leaves", type=int)
     ap.add_argument("--res-min-data", type=int)
     ap.add_argument("--build-base", metavar="NAME", help="基礎モデルの予測を作り直して base_NAME として保存")
@@ -132,14 +195,27 @@ def main():
         raise SystemExit("--tag が必要")
 
     mk = market(df, args.base)
+    if args.base2:
+        b2 = pd.read_parquet(base_file(args.base2)).rename(columns={"u_base": "u_base2"})
+        mk = mk.merge(b2[["race_id", "horse_id", "u_base2"]], on=["race_id", "horse_id"], how="left")
+        mk = mk[mk.groupby("race_id")["u_base2"].transform(lambda s: s.notna().all())].reset_index(drop=True)
     if args.res_market_extra:
         mk = market_extra(mk)
     if args.past_mkt:
         mk = add_past_market(mk)
     print(f"[{args.tag}] 基礎={args.base} 残差={args.residual} k={args.k} λ={args.lam} 段の重み={args.stage_w} "
           f"半減期={args.half_life} 残差の学習年数={args.res_years or '2015〜'} オッズ列={args.res_market}{args.res_market_extra or ''} "
-          f"葉={args.res_leaves} 最小={args.res_min_data} 残差3シード={args.res_seeds} 過去の市場評価={args.past_mkt} / {mk['race_id'].nunique():,}R", flush=True)
-    results = [run_year(mk, y, args) for y in YEARS]
+          f"葉={args.res_leaves} 最小={args.res_min_data} 残差3シード={args.res_seeds} 過去の市場評価={args.past_mkt} "
+          f"温度={args.temp} 基礎2={args.base2} 基礎なし={args.no_base} 再学習={args.refit} 残差の設定={args.res_params} / {mk['race_id'].nunique():,}R", flush=True)
+    years = YEARS
+    if args.years:
+        a, b = (int(x) for x in args.years.split("-"))
+        years = range(a, b + 1)
+    if args.tune:
+        tune(mk, args, pd.read_parquet(BENCH_DIR / f"{args.ref}.parquet"))
+        return
+    res_params = dict(RESIDUAL_PARAMS, **args.res_params) if args.res_params else None
+    results = [run_year(mk, y, args, res_params) for y in years]
     races = pd.concat([r for r, _ in results], ignore_index=True)
     preds = pd.concat([p for _, p in results], ignore_index=True)
     BENCH_DIR.mkdir(exist_ok=True)
@@ -161,6 +237,8 @@ def main():
             print(f"  {show(f'{y}年 {len(s):>5}R', s['d'])}")
         lo, _ = bootstrap_ci(d)
         print(f"  {show(f'通算  {len(both):>5}R', d)} → {'採用の条件を満たす' if lo > 0 else '満たさない'}")
+        for line in two_stage(both):
+            print("  " + line)
 
 
 if __name__ == "__main__":
