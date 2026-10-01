@@ -17,7 +17,7 @@ race_data_*.csv のうち、レース情報（芝ダ・距離・天候・馬場�
   削除後に python -m scrape rescrape --auto を実行すると、そのレースだけ取り直される
 ・既に値が入っている欄は上書きしない（空欄だけを埋める）
 ・書き込み前に元ファイルを race_data_YYYY.csv.bak_日時 としてバックアップする
-・v2/data/fetch_patches.py もここの parse_race_info を使う。表記を変えると v2 のパッチの中身も変わるので変えないこと
+・prep/fetch_patches.py もここの parse_race_info を使う。表記を変えると v2 のパッチの中身も変わるので変えないこと
 """
 import glob
 import os

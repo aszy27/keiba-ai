@@ -58,3 +58,4 @@ virenv/
 
 # 実行ログ
 logs/
+old/

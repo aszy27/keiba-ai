@@ -949,3 +949,13 @@ T7 で「種類の違う版を混ぜると効く」ことが分かったので�
     その後に決めた変更（実験5・6、技術の探索）はその数字を材料にしていないが、表示の後に決めたことは事実として残す。
   - 期待値1.3以上は1レースあたり約0.2点なので、1,000R で約200点。回収率の区間は広く、合格しても「儲かると確定した」わけではない。
 - 判定前に何か変えたくなったら、候補2は捨てて「候補3」として登録し直す（このデータを見ながら直さない）。
+
+### 最終テスト2の取りやめと v1 の削除（2026-10-02）
+- **最終テスト2（v1 時代の「既存+当日バイアス」を 2026-09-07 以降の1,000R で判定する登録）は判定せずに取りやめる。**
+  v2 の候補（C[all]・候補2）に置き換わったため。2026-09-07 以降の期間でこの候補の成績は一度も計算・表示していない（後出しの取りやめではない）。
+- v1 のコード（`core/`・`*_main.py`・`evaluate_*.py`・`build_edge_dataset.py`・`train_graph_embedding.py`）は作業ツリーから消した。git タグ `v1-final` に残っている。
+  大きいキャッシュ（`data/oof_features_cache.pkl` とそのバックアップ、`data/edge_dataset.pkl`、計約2GB）は削除。
+  v1 のモデル・過去の予想・結果は `old/`（Git 管理外）にまとめた。`experiments/legacy_scores.py` は OOF キャッシュが無いので今は動かない（結果は記録済み）。
+- 同日、v2 を直下に展開した（`v2/data` → `prep/`、`v2/model` → `model/`、`v2/{train,evaluate,predict,paths}.py` → 直下、
+  `v2/live` → `live/`、`v2/experiments` → `experiments/`、`v2/tests` → `tests/`）。以前の記録の `python -m v2.X` は新しい場所に読み替える
+  （例: `v2.data.ingest` → `prep.ingest`、`v2.evaluate` → `evaluate`、`v2.model.trip` → `model.trip`）。データの置き場所（`data/v2/`・`models/v2/`）は変えていない。

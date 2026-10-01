@@ -98,7 +98,7 @@ def run(years):
 # ---------- 組み合わせ券 ----------
 
 def exotic_path(year, bet_type):
-    from v2.paths import V2_DIR
+    from paths import V2_DIR
     return V2_DIR / "odds_exotic" / f"{year}_type{bet_type}.parquet"
 
 
@@ -143,7 +143,7 @@ def done_exotic(year, bet_type):
 
 
 def run_exotic(years, types, limit=None, sleep=0.7):
-    from v2.paths import table_path
+    from paths import table_path
     exotic_path(0, 0).parent.mkdir(parents=True, exist_ok=True)
     races = pd.read_parquet(table_path("races"), columns=["race_id", "race_date"])
     races["year"] = races["race_date"].dt.year

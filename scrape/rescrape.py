@@ -12,7 +12,7 @@ race_data_YYYY.csv に書き戻す。
     python -m scrape rescrape --ids 202605010308,202605010309
     python -m scrape rescrape --auto --dry-run       # 取得して中身を表示するだけ（保存しない）
 
-・v2/data/fetch_patches.py もここの fetch_race を使う（取り直したレースは data/v2/patches/ に保存される）。
+・prep/fetch_patches.py もここの fetch_race を使う（取り直したレースは data/v2/patches/ に保存される）。
   パース結果が変わると v2 のパッチの中身も変わるので、ここの列・表記は変えないこと
 
 ・db.netkeiba が別レースの内容を返す場合は race.netkeiba の結果ページから取り直す
