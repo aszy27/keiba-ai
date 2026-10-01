@@ -46,6 +46,8 @@ def load_snapshots(snapshot_dir=SNAPSHOT_DIR):
     for c in ("place_odds_min", "place_odds_max"):
         s[c] = pd.to_numeric(s[c], errors="coerce") if c in s else np.nan
     s = s[s["minutes_before"].isin(MINUTES_PRIORITY) & s["horse_number"].notna()]
+    if "api_status" in s:   # 発売前の「予想オッズ」（status=yoso）は実際のオッズではないので使わない
+        s = s[s["api_status"].astype(str).str.strip().str.lower() != "yoso"]
     s = s.drop_duplicates(["race_id", "minutes_before", "horse_number"], keep="last")
     ok = s[s["win_odds"] > 0].groupby(["race_id", "minutes_before"]).size().rename("n").reset_index()
     ok["prio"] = ok["minutes_before"].map({m: i for i, m in enumerate(MINUTES_PRIORITY)})
@@ -204,8 +206,15 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None):
         rows, status = fetch_odds(rid)
         if not rows:
             warns.setdefault(rid, []).append(f"オッズを取得できない（{status}）")
+        elif str(status).lower() == "yoso":   # 発売前の予想オッズ
+            warns.setdefault(rid, []).append("まだ発売前の予想オッズしか無い（予測しない）")
+            continue
         odds += rows
         time.sleep(1.0)
+    if not odds:
+        for rid in ids:
+            print(f"  {rid}: {' / '.join(warns.get(rid, []))}")
+        return None
     o = pd.DataFrame(odds)
     for c in ("horse_number", "win_odds", "place_odds_min", "place_odds_max"):
         o[c] = pd.to_numeric(o.get(c), errors="coerce")
