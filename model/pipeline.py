@@ -12,7 +12,7 @@ from model import trip as mt
 from model.base import PARAMS, eligible
 from model.combined import RESIDUAL_PARAMS
 from model.market import PLACE_COLS, add_market_cols, add_place_cols
-from model.past_market import PAST_COLS, PAST_DIFF, add_past_market
+from model.past_market import PAST_COLS, PAST_DIFF, add_past_market, load_table
 from model.plackett import PLGroups, lgb_objective_pl
 from model.softmax import RaceGroups, fit_logit, lgb_metric, lgb_objective
 from paths import V2_DIR, table_path
@@ -103,12 +103,13 @@ def merge_final_place_odds(d):
     return d.merge(po, on=["race_id", "horse_number"], how="left")
 
 
-def add_extra_cols(d, extras, final_place_odds=True):
-    """版が使う追加の列を作る。final_place_odds=False なら d にある複勝オッズ（スナップショット）をそのまま使う"""
+def add_extra_cols(d, extras, final_place_odds=True, live=False):
+    """版が使う追加の列を作る。final_place_odds=False なら d にある複勝オッズ（スナップショット）をそのまま使う。
+    live=True は発走前のレース（まだ runners.parquet に無い）で、過去の走の市場評価をそのレースの行も含めて作る"""
     if "place" in extras:
         d = add_place_cols(merge_final_place_odds(d) if final_place_odds else d)
     if "past" in extras:
-        d = add_past_market(d)
+        d = add_past_market(d, load_table(d) if live else None)
     return d
 
 

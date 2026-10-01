@@ -66,7 +66,7 @@ JRA の中央競馬を対象に、「市場（オッズ）が見落としてい�
 | ② データ準備 | `python -m prep.ingest` → `python -m prep.features` | CSV を正規化・検査して取り込み、176列の特徴量を作る | `data/v2/*.parquet` |
 | ③ 学習 | `python -m train --candidate <候補>` | 候補の設定どおりに本番用のモデルを学習して保存 | `models/v2/<候補>/` |
 | ④ 検証 | `python -m evaluate --tag <名前> ...` | 2019〜2026年の前進検証で、変更を現行と同じレースで比べる | `data/v2/bench/` |
-| ⑤ 実践 | `python -m predict --candidate <候補>` | 発走前オッズのスナップショットで勝率・買い目を出し、前向き検証を採点 | `result/v2/` |
+| ⑤ 実践 | `python -m predict --candidate <候補> --live` | 発走前の出馬表とオッズで買い目を出す（`--live` なし: 前向き検証の採点・判定） | `result/live/`・`result/v2/` |
 
 ## ファイル構成
 ```text
@@ -96,7 +96,7 @@ keiba/
 ├── train.py                # ③ 学習
 ├── evaluate.py             # ④ 検証
 ├── predict.py              # ⑤ 実践
-├── live/                   # 開催日の自動実行（タスクスケジューラ keiba-odds-snapshot → run_snapshot_hidden.vbs → run_snapshot.ps1）
+├── live/                   # 当日の運用: entries.py（出馬表・今日の結果の取り込み）、スナップショットの自動実行（タスクスケジューラ keiba-odds-snapshot → run_snapshot_hidden.vbs → run_snapshot.ps1）
 ├── experiments/            # 結論が出た検証（特徴量・モデルの種類・券種・地方競馬・技術の探索など。結果は docs/rebuild_plan.md）
 ├── tests/                  # リークテスト・検査・目的関数のテスト
 ├── paths.py                # データの置き場所
@@ -137,12 +137,21 @@ python -m evaluate --build-base base_pl3 --base-objective pl  # 年ごとの基�
 python -m evaluate --tag res_mkt --base base_pl3 --res-years 0 --half-life 730 --res-market --ref pl3_all_hl730
 ```
 
-**⑤ 実践・判定**（1,000R たまったら候補ごとに1回だけ。2回目は実行されない）
+**⑤ 実践: 発走前の買い目**（開催日に。枠順は前日、天候・馬場は当日の朝、馬体重は発走の約70分前に出る）
+```bash
+python -m predict --candidate cand2 --live --watch    # 開催日の間ずっと、発走15分前になったレースから順に買い目を出す
+python -m predict --candidate cand2 --live --within 20   # 発走まで20分以内のレースだけ1回
+```
+* 出馬表・今日終わったレースの結果・その時点のオッズを取り、学習と同じ関数で特徴量を作って、期待値1.3以上の単勝を出します（1回3〜4分）。
+  結果は `result/live/` に保存。オッズは発走直前まで動くので、買う直前のオッズで期待値が変わる点に注意。
+* 取れない項目（枠順・天候・馬場・馬体重・追い切り評価）は既定値で埋めずに警告します。警告が出たレースは学習時と条件がずれています。
+* **まだ前向き検証の判定前なので、実際に賭けるかどうかは判定の後に決めます。**
+
+**⑤ 前向き検証の判定**（1,000R たまったら候補ごとに1回だけ。2回目は実行されない）
 ```bash
 python -m predict --candidate c_all --judge
 python -m predict --candidate cand2 --judge
 ```
-※ 今の ⑤ は結果を取り込んだ後の採点です。発走前に買い目を出す（出馬表から特徴量を作る）処理はまだありません。
 
 ---
 

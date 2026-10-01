@@ -37,14 +37,19 @@ def from_runs(runs):
     return out
 
 
-def load_table():
-    """全レース（取消を除く）の過去の走の市場評価"""
+def load_table(extra_runs=None):
+    """全レース（取消を除く）の過去の走の市場評価。extra_runs（race_id, horse_id, race_date）に発走前のレースを足すと、
+    そのレースの行も作られる（値はその日より前の走だけから作るので、そのレース自身のオッズ・着順は要らない）"""
     r = pd.read_parquet(table_path("runners"), columns=["race_id", "horse_id", "horse_number", "finish_pos", "status"])
     r = r[r["status"] != "scratched"]
     races = pd.read_parquet(table_path("races"), columns=["race_id", "race_date"])
     o = pd.read_parquet(table_path("odds_final"), columns=["race_id", "horse_number", "win_odds"])
     r = r.merge(races, on="race_id").merge(o, on=["race_id", "horse_number"], how="left")
-    return from_runs(r[["race_id", "horse_id", "race_date", "finish_pos", "win_odds"]])
+    r = r[["race_id", "horse_id", "race_date", "finish_pos", "win_odds"]]
+    if extra_runs is not None:
+        e = extra_runs[["race_id", "horse_id", "race_date"]].assign(finish_pos=np.nan, win_odds=np.nan)
+        r = pd.concat([r[~r["race_id"].isin(e["race_id"])], e], ignore_index=True)
+    return from_runs(r)
 
 
 def add_past_market(d, table=None):
