@@ -31,6 +31,7 @@ from train import MODELS_DIR, variants_of
 
 SNAPSHOT_DIR = V2_DIR / "odds_snapshots"
 MINUTES_PRIORITY = [3, 10, 30]    # 登録どおり。判定まで変えない
+MIN_SECONDS_BEFORE = 60           # これより発走に近い（発走後を含む）スナップショットは使わない
 MIN_RACES = 1000
 OUT_DIR = ROOT / "result" / "v2"
 
@@ -48,6 +49,8 @@ def load_snapshots(snapshot_dir=SNAPSHOT_DIR):
     s = s[s["minutes_before"].isin(MINUTES_PRIORITY) & s["horse_number"].notna()]
     if "api_status" in s:   # 発売前の「予想オッズ」（status=yoso）は実際のオッズではないので使わない
         s = s[s["api_status"].astype(str).str.strip().str.lower() != "yoso"]
+    if "seconds_to_post" in s:   # PC の復帰の遅れなどで発走の直前・後に取れた行は、買える時点のオッズではないので使わない（次の優先順位へ）
+        s = s[pd.to_numeric(s["seconds_to_post"], errors="coerce") >= MIN_SECONDS_BEFORE]
     s = s.drop_duplicates(["race_id", "minutes_before", "horse_number"], keep="last")
     ok = s[s["win_odds"] > 0].groupby(["race_id", "minutes_before"]).size().rename("n").reset_index()
     ok["prio"] = ok["minutes_before"].map({m: i for i, m in enumerate(MINUTES_PRIORITY)})
@@ -117,8 +120,12 @@ def score(name, snapshot_dir=SNAPSHOT_DIR, out_dir=OUT_DIR, start=None):
     if th:
         print(f"  期待値{th}以上の単勝: {bets}点 的中 {int((d['bet'] & (d['win'] == 1)).sum())} / "
               f"回収率 {roi_actual:.1f}%（実際の払戻）/ {roi_snap:.1f}%（スナップショットのオッズで計算）")
+    missing_pay = int((d["bet"] & (d["win"] == 1) & d["win_pay"].isna()).sum())
+    if missing_pay:
+        print(f"  ※ 当たった買い目のうち払戻が未取得 {missing_pay}点（その分だけ実際の払戻の回収率が低く出ている。python -m scrape weekly → prep.ingest）")
     print(f"  保存: {out_dir / f'forward_{name}.csv'}")
-    return dict(n_races=n_races, diff=diff.mean(), lo=lo, hi=hi, bets=bets, roi_actual=roi_actual, roi_snapshot=roi_snap)
+    return dict(n_races=n_races, diff=diff.mean(), lo=lo, hi=hi, bets=bets, roi_actual=roi_actual, roi_snapshot=roi_snap,
+                missing_pay=missing_pay)
 
 
 def judge(name, res):
@@ -130,6 +137,8 @@ def judge(name, res):
         raise SystemExit(f"{name} は閾値が未登録")
     if res is None or res["n_races"] < MIN_RACES:
         raise SystemExit(f"まだ {0 if res is None else res['n_races']}R。{MIN_RACES}R たまるまで判定しない")
+    if res["missing_pay"]:
+        raise SystemExit(f"当たった買い目の払戻が {res['missing_pay']}点 未取得。取り込んでから判定する")
     roi = res["roi_snapshot"] if cfg["roi_basis"] == "snapshot" else res["roi_actual"]
     basis = "スナップショットのオッズで計算" if cfg["roi_basis"] == "snapshot" else "実際の払戻"
     ok = res["lo"] > 0 and roi > 100
