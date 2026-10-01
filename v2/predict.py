@@ -22,10 +22,10 @@ import pandas as pd
 from v2.model.base import eligible
 from v2.model.candidates import CANDIDATES
 from v2.model.market import add_market_cols
-from v2.model.pipeline import base_utility, predict_combined
+from v2.model.pipeline import add_extra_cols, base_utility, predict_combined
 from v2.model.softmax import RaceGroups, bootstrap_ci
 from v2.paths import ROOT, V2_DIR, table_path
-from v2.train import MODELS_DIR
+from v2.train import MODELS_DIR, variants_of
 
 SNAPSHOT_DIR = V2_DIR / "odds_snapshots"
 MINUTES_PRIORITY = [3, 10, 30]    # 登録どおり。判定まで変えない
@@ -36,27 +36,32 @@ OUT_DIR = ROOT / "result" / "v2"
 def load_snapshots(snapshot_dir=SNAPSHOT_DIR):
     files = sorted(snapshot_dir.glob("*.csv"))
     if not files:
-        return pd.DataFrame(columns=["race_id", "horse_number", "win_odds", "minutes_used"])
+        return pd.DataFrame(columns=["race_id", "horse_number", "win_odds", "place_odds_min", "place_odds_max", "minutes_used"])
     s = pd.concat([pd.read_csv(f, dtype={"race_id": str}, on_bad_lines="skip") for f in files], ignore_index=True)
     s["win_odds"] = pd.to_numeric(s["win_odds"], errors="coerce")
     s["minutes_before"] = pd.to_numeric(s["minutes_before"], errors="coerce")
     s["horse_number"] = pd.to_numeric(s["horse_number"], errors="coerce")
+    for c in ("place_odds_min", "place_odds_max"):
+        s[c] = pd.to_numeric(s[c], errors="coerce") if c in s else np.nan
     s = s[s["minutes_before"].isin(MINUTES_PRIORITY) & s["horse_number"].notna()]
     s = s.drop_duplicates(["race_id", "minutes_before", "horse_number"], keep="last")
     ok = s[s["win_odds"] > 0].groupby(["race_id", "minutes_before"]).size().rename("n").reset_index()
     ok["prio"] = ok["minutes_before"].map({m: i for i, m in enumerate(MINUTES_PRIORITY)})
     pick = ok.sort_values("prio").drop_duplicates("race_id")[["race_id", "minutes_before"]]
     s = s.merge(pick, on=["race_id", "minutes_before"])
-    return s[["race_id", "horse_number", "win_odds", "minutes_before"]].rename(columns={"minutes_before": "minutes_used"})
+    return s[["race_id", "horse_number", "win_odds", "place_odds_min", "place_odds_max", "minutes_before"]].rename(
+        columns={"minutes_before": "minutes_used"})
 
 
 def load_models(name):
+    """(設定, 基礎モデルの一覧, 版ごとの fit の一覧)"""
     d = MODELS_DIR / name
     meta = json.loads((d / "config.json").read_text(encoding="utf-8"))
     base = [lgb.Booster(model_file=str(d / f"base_{i}.txt")) for i in range(meta["n_base_models"])]
-    fit = dict(beta_a=np.array(meta["beta_a"]), beta_b=np.array(meta["beta_b"]),
-               residual=lgb.Booster(model_file=str(d / "residual.txt")), feats=meta["residual_feats"])
-    return meta, base, fit
+    fits = [dict(beta_a=np.array(v["beta_a"]), beta_b=np.array(v["beta_b"]), feats=v["feats"],
+                 residual=[lgb.Booster(model_file=str(d / f"residual_{v['name']}_{i}.txt")) for i in range(v["n_models"])])
+            for v in meta["variants"]]
+    return meta, base, fits
 
 
 def score(name, snapshot_dir=SNAPSHOT_DIR, out_dir=OUT_DIR, start=None):
@@ -64,7 +69,7 @@ def score(name, snapshot_dir=SNAPSHOT_DIR, out_dir=OUT_DIR, start=None):
     cfg["start"] = start or cfg["start"]
     if not cfg["start"]:
         raise SystemExit(f"{name} はまだ登録されていない（v2/model/candidates.py の start が空）")
-    meta, base, fit = load_models(name)
+    meta, base, fits = load_models(name)
     df = eligible(pd.read_parquet(table_path("features")))
     df = df[df["race_date"] >= cfg["start"]].reset_index(drop=True)
     snap = load_snapshots(snapshot_dir)
@@ -77,8 +82,10 @@ def score(name, snapshot_dir=SNAPSHOT_DIR, out_dir=OUT_DIR, start=None):
     if d.empty:
         return None
     d = add_market_cols(d)
+    d = add_extra_cols(d, {e for v in variants_of(meta["config"]) for e in v["extras"]}, final_place_odds=False)
     d["u_base"] = base_utility(base, meta["base_temp"], d)
-    u_a, u_c = predict_combined(fit, d)
+    us = [predict_combined(f, d) for f in fits]
+    u_a, u_c = us[0][0], np.mean([u for _, u in us], axis=0)   # 版の効用の平均 = log(勝率) の対数プーリング
     grp = RaceGroups(d["race_id"], d["win"])
     (ll_a, p_a), (ll_c, p_c) = grp.ll(u_a), grp.ll(u_c)
     d["p_a"], d["p_c"] = p_a, p_c

@@ -15,10 +15,10 @@ import numpy as np
 import pandas as pd
 
 from v2.model.combined import RESIDUAL_PARAMS
-from v2.model.market import add_shin
+from v2.model.market import add_place_cols, add_shin
 from v2.model.past_market import PAST_COLS, PAST_DIFF, add_past_market
 from v2.model.pipeline import (BENCH_DIR, END, FEATS, MARKET_FEATS, SEEDS, base_file, between, fit_base, base_utility, fit_combined, load,
-                               market, predict_combined, recency_weight, residual_trees)
+                               market, merge_final_place_odds, predict_combined, recency_weight, residual_trees)
 from v2.model.softmax import RaceGroups, bootstrap_ci
 from v2.paths import table_path
 
@@ -51,14 +51,7 @@ def build_base(df, name, args):
 
 def market_extra(d):
     """実験5で試した列（複勝オッズ・レース全体のオッズの形）"""
-    po = pd.read_parquet(table_path("odds_final"), columns=["race_id", "horse_number", "place_odds_min", "place_odds_max"])
-    po["horse_number"] = po["horse_number"].astype(float)
-    d = d.merge(po, on=["race_id", "horse_number"], how="left")
-    lo = d["place_odds_min"].where(d["place_odds_min"] > 0)
-    hi = d["place_odds_max"].where(d["place_odds_max"] > 0)
-    d["x_place"] = np.log(1.0 / lo)
-    d["place_gap"] = d["x_place"] - d["x_mkt"]
-    d["place_spread"] = np.log(hi / lo)
+    d = add_place_cols(merge_final_place_odds(d))
     g = d.groupby("race_id")
     d["fav_log_odds"] = np.log(g["win_odds"].transform("min"))
     d["mkt_entropy"] = (-np.exp(d["x_mkt"]) * d["x_mkt"]).groupby(d["race_id"]).transform("sum")

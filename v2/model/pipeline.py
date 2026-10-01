@@ -11,7 +11,8 @@ from v2.data import features_extra as fx
 from v2.model import trip as mt
 from v2.model.base import PARAMS, eligible
 from v2.model.combined import RESIDUAL_PARAMS
-from v2.model.market import add_market_cols
+from v2.model.market import PLACE_COLS, add_market_cols, add_place_cols
+from v2.model.past_market import PAST_COLS, PAST_DIFF, add_past_market
 from v2.model.plackett import PLGroups, lgb_objective_pl
 from v2.model.softmax import RaceGroups, fit_logit, lgb_metric, lgb_objective
 from v2.paths import V2_DIR, table_path
@@ -91,6 +92,24 @@ def market(df, base):
     finally:
         mt.base_path = orig
     return add_market_cols(d)
+
+
+EXTRA_COLS = {"place": PLACE_COLS, "past": PAST_COLS + PAST_DIFF}   # 組み合わせの版が残差の入力に足す列
+
+
+def merge_final_place_odds(d):
+    po = pd.read_parquet(table_path("odds_final"), columns=["race_id", "horse_number", "place_odds_min", "place_odds_max"])
+    po["horse_number"] = po["horse_number"].astype(float)
+    return d.merge(po, on=["race_id", "horse_number"], how="left")
+
+
+def add_extra_cols(d, extras, final_place_odds=True):
+    """版が使う追加の列を作る。final_place_odds=False なら d にある複勝オッズ（スナップショット）をそのまま使う"""
+    if "place" in extras:
+        d = add_place_cols(merge_final_place_odds(d) if final_place_odds else d)
+    if "past" in extras:
+        d = add_past_market(d)
+    return d
 
 
 def fit_combined(tr, va, weight_end=None, half_life=None, market_cols=False, extra_cols=(), res_objective="win",

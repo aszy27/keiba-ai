@@ -33,3 +33,16 @@ def add_shin(d, iters=60):
     d["x_shin"] = np.log(p)
     d["shin_z"] = zr
     return d
+
+
+PLACE_COLS = ["x_place", "place_gap", "place_spread"]
+
+
+def add_place_cols(d):
+    """複勝オッズの列（実験5の mkt_place）。d に place_odds_min / place_odds_max と x_mkt があること。無い馬は NaN"""
+    lo = d["place_odds_min"].where(d["place_odds_min"] > 0)
+    hi = d["place_odds_max"].where(d["place_odds_max"] > 0)
+    d["x_place"] = np.log(1.0 / lo)
+    d["place_gap"] = d["x_place"] - d["x_mkt"]
+    d["place_spread"] = np.log(hi / lo)
+    return d
