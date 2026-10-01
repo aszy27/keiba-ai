@@ -1,12 +1,15 @@
-pandas
-numpy
-lightgbm
-torch
-scikit-learn
-joblib
-tqdm
-optuna
-networkx
-gensim
-requests
-beautifulsoup4
+# 本線（スクレイプ・取り込み・学習・検証・実践）。動作を確認した版を下限にしている
+pandas>=2.3
+numpy>=2.2
+scipy>=1.15
+pyarrow>=25
+lightgbm>=4.6
+requests>=2.32
+urllib3>=2.6
+beautifulsoup4>=4.14
+tqdm>=4.67
+pytest>=9.1
+
+# experiments/model_family.py だけが使う（モデルの種類の比較。結論は出ている）
+# torch>=2.7
+# catboost>=1.2
