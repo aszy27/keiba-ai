@@ -95,7 +95,7 @@ python -m v2.data.ingest           # 旧CSV → data/v2/*.parquet（取り込み
 python -m v2.data.fetch_patches    # ingest の WARN にレース情報の欠損・抜けレースが出たときだけ。その後もう一度 ingest
 python -m v2.data.features         # 特徴量を作り直す
 python -m pytest v2/tests scrape/tests
-python -m v2.predict --candidate c_all   # ⑤ 前向き検証が何Rたまったか・途中の成績
+python -m v2.predict --candidate c_all   # ⑤ 前向き検証が何Rたまったか・途中の成績（候補2は --candidate cand2）
 ```
 
 **開催日（自動）**: タスクスケジューラの `keiba-odds-snapshot` が毎日 8:00 から30分おきに `v2/live/run_snapshot_hidden.vbs` を起動し、
