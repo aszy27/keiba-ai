@@ -188,6 +188,11 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None, bets=N
     post = dict(sched)
     print(f"[{name}] {date} の {len(ids)}R（{sched[0][1]:%H:%M}〜{sched[-1][1]:%H:%M}）/ 期待値{cfg['threshold']}以上の単勝", flush=True)
 
+    # 発売前（予想オッズしか無い）なら、3分かけて特徴量を作る前に止める（オッズは特徴量を作った後に取り直す）
+    _, first_status = fetch_odds(ids[0])
+    if str(first_status).lower() == "yoso":
+        print(f"  {ids[0]}: まだ発売前の予想オッズしか無いので予測しない（発売が始まってから実行する）")
+        return None
     from live.entries import fetch_finished
     fin_races, fin_runners, not_yet = fetch_finished(done) if done else (None, None, [])
     print(f"  今日終わったレース {len(done)}R のうち結果を取得 {0 if fin_races is None else len(fin_races)}R"
