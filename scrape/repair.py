@@ -31,7 +31,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-from scrape.common import DATA_DIR, PLACE_MAP
+from scrape.common import DATA_DIR, PLACE_MAP, http_get
 
 GRADE_ICON = {"Icon_GradeType1": "GI", "Icon_GradeType2": "GII", "Icon_GradeType3": "GIII"}
 HEADERS = {
@@ -53,19 +53,13 @@ def length_class(length: int) -> str:
 
 
 def fetch(url, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            r.encoding = 'EUC-JP'
-            if r.status_code == 200:
-                return r
-            if r.status_code in (403, 404):
-                print(f"   ❌ HTTP {r.status_code}: {url}")
-                return None
-        except Exception as e:
-            print(f"   ⚠️ 通信エラー({attempt + 1}/{max_retries}): {e}")
-        time.sleep(2 ** attempt * 3)
-    return None
+    """通信は scrape.common.http_get（間隔の制御・再試行・ブロックの検知と冷却期間）を通す"""
+    r, status = http_get(url, tries=max_retries)
+    if r is None:
+        print(f"   ❌ 取得できない（{status}）: {url}")
+        return None
+    r.encoding = 'EUC-JP'
+    return r
 
 
 def parse_race_info(race_id: str) -> dict:

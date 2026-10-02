@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import requests
 
-from scrape.common import ODDS_API
+from scrape.common import ODDS_API, http_get
 from paths import V2_DIR
 
 OUT_DIR = V2_DIR / "odds_snapshots"
@@ -35,8 +35,9 @@ GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切
 
 def race_schedule(date):
     """その日の (race_id, 発走時刻) の一覧"""
-    r = requests.get(LIST_URL.format(date), headers=HEADERS, timeout=20)
-    r.raise_for_status()
+    r, status = http_get(LIST_URL.format(date), referer="https://race.netkeiba.com/", honor_cooldown=False)
+    if r is None:
+        raise RuntimeError(f"レース一覧を取得できない（{status}）")
     html = r.content.decode("utf-8", errors="replace")
     races = {}
     for item in html.split('<li class="RaceList_DataItem')[1:]:
@@ -48,10 +49,13 @@ def race_schedule(date):
 
 
 def fetch_odds(race_id):
+    r, status = http_get(ODDS_API.format(race_id=race_id, bet_type=1, action="update"),
+                         referer="https://race.netkeiba.com/", honor_cooldown=False)
+    if r is None:
+        return [], f"error: {status}"
     try:
-        js = requests.get(ODDS_API.format(race_id=race_id, bet_type=1, action="update"), headers=HEADERS,
-                          timeout=20).json()
-    except (requests.RequestException, ValueError) as e:
+        js = r.json()
+    except ValueError as e:
         return [], f"error: {e}"
     data = js.get("data") if isinstance(js.get("data"), dict) else {}
     odds = data.get("odds") or {}

@@ -35,7 +35,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-from scrape.common import DATA_DIR, PLACE_MAP
+from scrape.common import DATA_DIR, PLACE_MAP, http_get
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -75,21 +75,14 @@ def to_float(text):
 
 
 def fetch(url, max_retries=3, quiet=False):
-    for attempt in range(max_retries):
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=20)
-            r.encoding = 'EUC-JP'
-            if r.status_code == 200:
-                return r
-            if quiet:
-                return None
-            if r.status_code in (403, 404):
-                print(f"   ❌ HTTP {r.status_code}: {url}")
-                return None
-        except Exception as e:
-            print(f"   ⚠️ 通信エラー({attempt + 1}/{max_retries}): {e}")
-        time.sleep(3 * 2 ** attempt)
-    return None
+    """通信は scrape.common.http_get（間隔の制御・再試行・ブロックの検知と冷却期間）を通す"""
+    r, status = http_get(url, tries=max_retries)
+    if r is None:
+        if not quiet:
+            print(f"   ❌ 取得できない（{status}）: {url}")
+        return None
+    r.encoding = 'EUC-JP'
+    return r
 
 
 def _id_from(cell, kind):

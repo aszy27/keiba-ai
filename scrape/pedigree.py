@@ -10,7 +10,7 @@ import time
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from scrape.common import BLOCK_WORDS, DATA_DIR, USER_AGENTS, create_session as _base_session, race_data_files
+from scrape.common import BLOCK_WORDS, DATA_DIR, create_session as _base_session, http_get, race_data_files
 
 MIN_SLEEP = 1.0
 MAX_SLEEP = 3.0
@@ -21,13 +21,8 @@ FILENAME = str(DATA_DIR / "master_horse_data.csv")
 
 
 def create_session():
-    session = _base_session()
-    session.headers.update({
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-        "Referer": "https://db.netkeiba.com/"
-    })
-    return session
+    """互換のため残している。通信は scrape.common.http_get を通る"""
+    return _base_session()
 
 
 def extract_id_from_url(url):
@@ -40,11 +35,10 @@ def scrape_pedigree_page(horse_id, session):
     url = f"https://db.netkeiba.com/horse/ped/{horse_id}/"
 
     try:
-        response = session.get(url, timeout=10)
-
-        if response.status_code == 404:
+        response, status = http_get(url, referer="https://db.netkeiba.com/")
+        if status == "not_found":
             return None
-        if response.status_code != 200:
+        if response is None:
             return "BLOCK"
 
         response.encoding = 'euc-jp'
@@ -239,28 +233,15 @@ def run():
                     # 🔴 FIX: 起動時のヘルスチェックが通っただけで以後の全BLOCKを「ゴーストID」と
                     #          断定すると、途中からIP制限がかかった場合に実在する馬まで誤って
                     #          'NO_PED' で汚染し、二度と再取得されなくなる。
-                    #          ここでは NO_PED を書き込まず、必ずリトライ＆冷却を経由する。
-                    horse_retry_count += 1
-                    print(f"\n🚨 制限検知(BLOCK) [その馬のリトライ: {horse_retry_count}/2回目]")
-
+                    #          ここでは NO_PED を書き込まない（次回の実行で取り直せるように）。
+                    print(f"\n🚨 制限検知(BLOCK) [ID: {horse_id}]")
                     if new_data:
                         save_to_csv_safe(new_data, COLUMNS)
                         new_data = []
-
-                    # 1回目のBLOCKなら5分待ってセッションを変えて同じ馬を再開
-                    if horse_retry_count < 2:
-                        print("⏳ 冷却とIP規制解除を待つため、5分間（300秒）完全停止します...")
-                        time.sleep(300)
-                        print("♻️ 5分経過しました。セッションとUser-Agentをリフレッシュして同じ馬から再挑戦します。")
-                        session = create_session()
-                        continue
-                    else:
-                        # 2回連続で同じ馬がBLOCKされた場合、その馬の取得を諦めてスマートスキップ
-                        # （NO_PEDは刻印しない＝次回実行時に再挑戦できるようにする）
-                        print(
-                            f"⚠️ 5分待っても同じ馬 {horse_id} で即ブロックされるため、この馬は一旦スキップして次へ突き進みます。")
-                        consecutive_block_count += 1
-                        break  # whileループを強制脱出して、次の馬（forの次のループ）へ進む
+                    # ブロックの兆候が出たら、User-Agent を変えて取り直すようなことはせず、ここまでを保存して止める
+                    # （兆候が続けば scrape.common が冷却期間に入り、ほかの処理・翌日の実行もその間は取りに行かない）
+                    print("🛑 アクセス制限の兆候があるので、ここまでを保存して止めます。時間をおいてから再実行してください。")
+                    return
 
                 if data:
                     new_data.append(data)

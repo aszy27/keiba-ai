@@ -20,7 +20,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from scrape.common import DATA_DIR, DATA_SEARCH_DIRS, ODDS_API, create_session, get_headers
+from scrape.common import DATA_DIR, DATA_SEARCH_DIRS, ODDS_API, create_session, http_get
 
 FILE_OUT = str(DATA_DIR / "odds_api_progress.csv")
 COLS = ["race_id", "horse_number", "win_odds", "popularity", "place_min", "place_max", "official_datetime"]
@@ -31,12 +31,9 @@ EXOTIC_SAVE_EVERY = 100
 # ---------- 単勝・複勝 ----------
 
 def fetch(session, rid):
-    try:
-        r = session.get(ODDS_API.format(race_id=rid, bet_type=1, action="init"), headers=get_headers(), timeout=20)
-    except Exception:
-        return "NETWORK_ERROR"
-    if r.status_code != 200:
-        return "BLOCK"
+    r, status = http_get(ODDS_API.format(race_id=rid, bet_type=1, action="init"), referer="https://race.netkeiba.com/")
+    if r is None:
+        return "NETWORK_ERROR" if status == "network_error" else "BLOCK"
     try:
         js = r.json()
     except ValueError:
@@ -104,10 +101,13 @@ def exotic_path(year, bet_type):
 
 def fetch_exotic(race_id, bet_type, session):
     """戻り値: (行のリスト, 状態)。行は (組み合わせ, オッズ下限, オッズ上限)"""
+    r, status = http_get(ODDS_API.format(race_id=race_id, bet_type=bet_type, action="update"),
+                         referer="https://race.netkeiba.com/")
+    if r is None:
+        return [], f"error: {status}"
     try:
-        js = session.get(ODDS_API.format(race_id=race_id, bet_type=bet_type, action="update"),
-                         headers=get_headers(), timeout=20).json()
-    except (requests.RequestException, ValueError) as e:
+        js = r.json()
+    except ValueError as e:
         return [], f"error: {type(e).__name__}"
     data = js.get("data") if isinstance(js.get("data"), dict) else {}
     odds = (data.get("odds") or {}).get(str(bet_type)) or {}
@@ -163,7 +163,7 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
     exotic_path(0, 0).parent.mkdir(parents=True, exist_ok=True)
     races = pd.read_parquet(table_path("races"), columns=["race_id", "race_date"])
     races["year"] = races["race_date"].dt.year
-    session = requests.Session()
+    session = create_session()
     empty = load_empty()
     n_req, n_fail = 0, 0
 

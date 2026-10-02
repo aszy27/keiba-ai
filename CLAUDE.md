@@ -11,7 +11,10 @@
   - 発走3分前のスナップショット（`data/v2/odds_snapshots/`）で、1,000R たまってから `python -m predict --candidate <候補> --judge` を候補ごとに1回だけ。
   - 本番用モデル `models/v2/` は Git 管理外なので消さないこと（作り直すと、毎週の取り込みで過去の特徴量が少し変わっている分だけ別物になる）。
 - **発走前の買い目**: `python -m predict --candidate cand2 --live --watch`（`live/entries.py` が出馬表と今日の結果を学習データと同じ形で取り込む）。
-  未解決: 追い切り評価が発走前に無料で取れるか（取れないと上積みが約2割減り、前向き検証の判定は少し甘くなる。`docs/rebuild_plan.md`「発走前の買い目」）。
+  追い切り評価は発走前（前日13時以降、G1 は前々日）にログインなしで取れる（2026-10-02 確認）。発走前とレース後の評価が同じかは、
+  `data/v2/live_checks/oikiri_pre_20261003_04.csv` と週明けの取り込みを突き合わせて確かめる。
+- **スクレイパーはすべて `scrape/common.py` の `http_get` を通る**（間隔の制御・429 の待機・ブロックの兆候が続くと6時間の冷却期間 `data/scrape_cooldown.json`）。
+  冷却期間中は発走前オッズのスナップショット以外は取りに行かない。ブロックされたら IP や User-Agent を変えて取り続けるような回避はしない。
 - **組み合わせ券のオッズの取り足し**: タスクスケジューラ `keiba-exotic-odds`（月〜木10時、`live/run_exotic_fetch.ps1`、ログ `logs/exotic_*.log`）が
   2021〜2025年の3連複・3連単の確定オッズを1日3,000リクエストずつ取る。そろったら `docs/rebuild_plan.md`「3連複・3連単の検証の手順」どおりに判定する。
 - スナップショットはタスクスケジューラ（`keiba-odds-snapshot` → `live/run_snapshot_hidden.vbs`）が毎日起動して貯める。**開催日はPCの電源を切らないこと**（スリープは可）。

@@ -21,7 +21,7 @@ import time
 
 import pandas as pd
 
-from scrape.common import DATA_DIR, create_session, get_headers, is_block_title, race_data_files
+from scrape.common import DATA_DIR, _block_signal, create_session, http_get, is_block_title, race_data_files
 from bs4 import BeautifulSoup
 
 URL = "https://db.netkeiba.com/race/{}/"
@@ -246,25 +246,18 @@ def shown_race_id(html):
 
 def fetch_page(session, race_id, max_retries=2):
     """ページの HTML を返す。レースが無ければ None、制限・通信異常が続けば Blocked"""
-    for attempt in range(max_retries):
-        try:
-            r = session.get(URL.format(race_id), headers=get_headers("https://db.netkeiba.com/"), timeout=20)
-            if r.status_code == 404:
-                return None
-            if r.status_code == 200:
-                r.encoding = r.apparent_encoding
-                html = r.text
-                if not is_block_title(BeautifulSoup(html[:5000], 'html.parser')):
-                    return html
-                why = "制限画面"
-            else:
-                why = f"HTTP {r.status_code}"
-        except Exception as e:
-            why = str(e)
-        if attempt < max_retries - 1:
-            print(f"\n🚨 通信エラー（{why}）。120秒待ってリトライします")
-            time.sleep(120)
-    raise Blocked(why)
+    # 通信は scrape.common.http_get（間隔の制御・再試行・ブロックの検知と冷却期間）を通す
+    r, status = http_get(URL.format(race_id), referer="https://db.netkeiba.com/", tries=max_retries + 1)
+    if status == "not_found":
+        return None
+    if r is None:
+        raise Blocked(status)
+    r.encoding = r.apparent_encoding
+    html = r.text
+    if is_block_title(BeautifulSoup(html[:5000], 'html.parser')):
+        _block_signal("制限画面")
+        raise Blocked("制限画面")
+    return html
 
 
 def load_race(session, race_id):
