@@ -19,3 +19,11 @@ def test_snapshot_priority_and_filters(tmp_path):
     pd.DataFrame(rows).assign(place_odds_min=1.1, place_odds_max=1.5).to_csv(tmp_path / "20261003.csv", index=False)
     s = load_snapshots(tmp_path).groupby("race_id")["minutes_used"].first().to_dict()
     assert s == {"r1": 10, "r2": 30, "r3": 3}
+
+
+def test_immature_odds():
+    from predict import immature_odds
+    mature = pd.DataFrame({"race_id": "a", "win_odds": [2.5, 4.0, 6.0, 9.0, 15.0, 40.0]})      # 1/オッズの合計 ≒ 1.26
+    early = pd.DataFrame({"race_id": "b", "win_odds": [2.0, 3.0, 999.9, 999.9, 999.9, 999.9]})  # 上限の馬がいる
+    thin = pd.DataFrame({"race_id": "c", "win_odds": [3.0, 4.0, 6.0, 9.0, 15.0, 40.0]})        # 合計 ≒ 1.03
+    assert immature_odds(pd.concat([mature, early, thin], ignore_index=True)) == {"b", "c"}

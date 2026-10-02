@@ -32,6 +32,17 @@ from train import MODELS_DIR, variants_of
 SNAPSHOT_DIR = V2_DIR / "odds_snapshots"
 MINUTES_PRIORITY = [3, 10, 30]    # 登録どおり。判定まで変えない
 MIN_SECONDS_BEFORE = 60           # これより発走に近い（発走後を含む）スナップショットは使わない
+ODDS_CAP = 999.9                  # 単勝オッズの表示の上限（売れていない馬）
+BOOK_RANGE = (1.18, 1.32)         # 確定オッズの「1/オッズ の合計」は 99.8% のレースでこの範囲（控除率20%で約1.25）
+
+
+def immature_odds(d):
+    """オッズがまだ固まっていない（発売直後で売り上げが少ない）レースの ID の集合。
+    上限の 999.9倍 の馬がいるか、1/オッズ の合計が確定オッズの範囲の外。学習は確定オッズなので、こういうオッズでは期待値が当てにならない"""
+    g = d.groupby("race_id")["win_odds"]
+    book = (1.0 / d["win_odds"]).groupby(d["race_id"]).sum()
+    bad = (g.max() >= ODDS_CAP) | (book < BOOK_RANGE[0]) | (book > BOOK_RANGE[1])
+    return set(bad[bad].index)
 MIN_RACES = 1000
 OUT_DIR = ROOT / "result" / "v2"
 
@@ -114,6 +125,9 @@ def score(name, snapshot_dir=SNAPSHOT_DIR, out_dir=OUT_DIR, start=None):
     n_races = len(diff)
     print(f"  使ったオッズ: " + " / ".join(f"{int(m)}分前 {n}R" for m, n in d.groupby("minutes_used")["race_id"].nunique().items()))
     print(f"  C − A {diff.mean():+.4f} [{cfg['ci_level']:.1%}区間 {lo:+.4f}, {hi:+.4f}]（{n_races}R）")
+    n_imm = len(immature_odds(d))
+    if n_imm:   # 判定の対象は変えない（登録どおり）。発走3分前ならまず起きないので、起きていれば知らせる
+        print(f"  ※ スナップショットのオッズが固まっていないように見えるレース {n_imm}R（999.9倍の馬がいる / 1/オッズの合計が範囲外）")
     bets = int(d["bet"].sum())
     roi_actual = d["ret_actual"].sum() / max(bets, 1) * 100
     roi_snap = d["ret_snapshot"].sum() / max(bets, 1) * 100
@@ -237,6 +251,12 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None, bets=N
     ok = d.groupby("race_id")["win_odds"].transform(lambda s: (s > 0).all()) & d["horse_number"].notna()
     for rid in d.loc[~ok, "race_id"].unique():
         warns.setdefault(rid, []).append("馬番かオッズがそろわないので予測しない")
+    raw = d[ok]
+    for rid in immature_odds(raw):
+        g = raw[raw["race_id"] == rid]["win_odds"]
+        warns.setdefault(rid, []).append(f"オッズがまだ固まっていない（{ODDS_CAP}倍の馬 {int((g >= ODDS_CAP).sum())}頭・"
+                                         f"1/オッズの合計 {(1 / g).sum():.3f}）ので予測しない。発走が近づいてから実行する")
+        ok &= d["race_id"] != rid
     d = d[ok].sort_values(["race_id", "horse_number"]).reset_index(drop=True)
     if d.empty:
         for rid in ids:
