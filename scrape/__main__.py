@@ -34,6 +34,8 @@ def main():
     p.add_argument("--types", default="7,8", help="4=馬連 / 5=ワイド / 7=3連複 / 8=3連単")
     p.add_argument("--limit", type=int, help="1回の実行で取るレース数の上限")
     p.add_argument("--sleep", type=float, default=0.7)
+    p.add_argument("--max-requests", type=int, help="今回の実行全体のリクエスト数の上限")
+    p.add_argument("--weekdays-only", action="store_true", help="金〜日（開催日の前後）は何もしない（スナップショットと API を取り合わないため）")
     p = sub.add_parser("repair", help="レース情報の欠損補完・偽レースの削除")
     p.add_argument("--all", action="store_true", help="train / val / test すべてを対象にする（既定は test のみ）")
     p.add_argument("--dry-run", action="store_true", help="一覧を表示するだけ")
@@ -65,9 +67,12 @@ def main():
         from scrape import odds
         odds.run([y.strip() for y in args.years.split(",")])
     if args.cmd == "odds-exotic":
+        if args.weekdays_only and datetime.datetime.now().weekday() >= 4:
+            print("金〜日は取得しない（--weekdays-only）")
+            return
         from scrape import odds
         odds.run_exotic([int(y) for y in args.years.split(",")], [int(t) for t in args.types.split(",")],
-                        args.limit, args.sleep)
+                        args.limit, args.sleep, args.max_requests)
     if args.cmd in ("weekly", "repair"):
         from scrape import repair
         repair.run(all_dirs=getattr(args, "all", False), dry_run=getattr(args, "dry_run", False))

@@ -142,24 +142,58 @@ def done_exotic(year, bet_type):
     return set(pd.read_parquet(path, columns=["race_id"])["race_id"].unique()) if path.exists() else set()
 
 
-def run_exotic(years, types, limit=None, sleep=0.7):
+def empty_path():
+    from paths import V2_DIR
+    return V2_DIR / "odds_exotic" / "empty.csv"
+
+
+def load_empty():
+    """オッズが返ってこなかった（取消・中止などで、ブロックではない）(レース, type)。次からは取りに行かない"""
+    p = empty_path()
+    if not p.exists():
+        return set()
+    d = pd.read_csv(p, dtype={"race_id": str})
+    return set(zip(d["race_id"], d["bet_type"]))
+
+
+def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_after_fail=20):
+    """年 → 券種の順に、取得していないレースを取る。max_requests は今回の実行全体の上限、
+    stop_after_fail 回続けて取れなければブロックの兆候とみて止める（翌日に続きから取れる）"""
     from paths import table_path
     exotic_path(0, 0).parent.mkdir(parents=True, exist_ok=True)
     races = pd.read_parquet(table_path("races"), columns=["race_id", "race_date"])
     races["year"] = races["race_date"].dt.year
     session = requests.Session()
+    empty = load_empty()
+    n_req, n_fail = 0, 0
 
     for year in years:
         ids = races.loc[races["year"] == year, "race_id"].sort_values().tolist()
         for bet_type in types:
             have = done_exotic(year, bet_type)
-            todo = [r for r in ids if r not in have][:limit]
+            todo = [r for r in ids if r not in have and (r, bet_type) not in empty][:limit]
             print(f"{year}年 {EXOTIC_NAMES[bet_type]}: 取得済み {len(have)}R / 残り {len(todo)}R", flush=True)
             buf, t0 = [], time.time()
             for i, rid in enumerate(todo, 1):
+                if max_requests is not None and n_req >= max_requests:
+                    save_exotic(buf, year, bet_type)
+                    print(f"今回の上限 {max_requests}回に達したので終了（続きは次回）", flush=True)
+                    return
                 rows, status = fetch_exotic(rid, bet_type, session)
+                n_req += 1
                 if not rows:
                     print(f"  {rid} 取得できず（{status}）", flush=True)
+                    if str(status).startswith("error"):
+                        n_fail += 1
+                        if n_fail >= stop_after_fail:
+                            save_exotic(buf, year, bet_type)
+                            print(f"{stop_after_fail}回続けて取得できない（ブロックの兆候）ので終了", flush=True)
+                            return
+                    else:   # API は答えたがオッズが無い（取消・中止など）→ 記録して次から飛ばす
+                        pd.DataFrame([{"race_id": rid, "bet_type": bet_type, "status": status}]).to_csv(
+                            empty_path(), mode="a", index=False, header=not empty_path().exists())
+                else:
+                    n_fail = 0
                 buf += [(rid, c, lo, hi) for c, lo, hi in rows]
                 time.sleep(sleep * random.uniform(0.8, 1.3))
                 if i % EXOTIC_SAVE_EVERY == 0:
