@@ -37,6 +37,7 @@ models/*.pth
 models/*.pkl
 models/*.db
 models/v2/
+data/scrape_cooldown.json
 models.bak_*/
 *.bak_*
 
