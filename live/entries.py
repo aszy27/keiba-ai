@@ -165,12 +165,18 @@ def fetch(race_ids, session=None, with_training=True):
     return races, runners, training, horses, warns
 
 
+_FINISHED_CACHE = {}   # race_id → その日の結果（--watch で何度も呼ばれるので、取得済みのレースは取り直さない）
+
+
 def fetch_finished(race_ids, session=None):
     """今日すでに終わったレースの結果（学習データと同じスクレイパー scrape.results で db.netkeiba から取る）→ (races, runners)。
     特徴量の「当日バイアス」（同じ日・同じ場・同じ芝ダで先に終わったレースの上位馬の枠・位置取り）は、これが無いと作れない"""
     session = session or create_session()
     raw = []
     for rid in race_ids:
+        if rid in _FINISHED_CACHE:
+            raw.append(_FINISHED_CACHE[rid])
+            continue
         df = load_race(session, rid)
         if df is None or not len(df):
             continue
@@ -181,6 +187,7 @@ def fetch_finished(race_ids, session=None):
             if key in info:
                 blank = df[key].isna() | (df[key].astype(str).str.strip().isin(["", "None", "nan"])) if key in df else True
                 df[key] = df[key].where(~blank, info[key]) if key in df else info[key]
+        _FINISHED_CACHE[rid] = df
         raw.append(df)
     if not raw:
         return None, None, []
