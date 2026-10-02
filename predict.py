@@ -295,7 +295,8 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None, bets=N
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{date}_{stamp:%H%M}_{name}.csv"
     d.assign(post_time=d["race_id"].map(lambda r: f"{post[r]:%H:%M}"), odds_at=f"{stamp:%H:%M:%S}")[
-        ["race_id", "post_time", "horse_number", "horse_name", "win_odds", "p_a", "p_c", "ev", "bet", "odds_at"]
+        ["race_id", "post_time", "horse_number", "horse_id", "horse_name", "win_odds", "place_odds_min", "place_odds_max",
+         "p_a", "p_c", "ev", "bet", "odds_at"]
     ].to_csv(out, index=False, encoding="utf-8-sig")
 
     print()
