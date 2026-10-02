@@ -162,7 +162,7 @@ def race_softmax(u, race_ids):
     return (e / e.groupby(rid).transform("sum")).to_numpy()
 
 
-def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None):
+def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None, bets=None, exotic_th=2.0):
     """発走前のレースの買い目を出す: 出馬表 → 特徴量（学習と同じ関数）→ 今のオッズ → 候補のモデル → 期待値が閾値以上の単勝"""
     import time
     from datetime import timedelta
@@ -250,6 +250,22 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None):
     names = runners.set_index(["race_id", "horse_id"])["horse_name"]
     d["horse_name"] = [names.get((r, h), "") for r, h in zip(d["race_id"], d["horse_id"])]
 
+    exotic = {}
+    if bets:   # 3連複・3連単（参考。前向き検証の対象ではなく、回収率100%超えは確かめられていない）
+        from model.exotic import BET_TYPES, race_ev_ratio
+        from scrape.odds import fetch_exotic
+        import requests
+        sess = requests.Session()
+        for rid, g in d.groupby("race_id", sort=False):
+            for bet in bets:
+                rows, status = fetch_exotic(rid, BET_TYPES[bet], sess)
+                time.sleep(1.0)
+                if not rows or str(status).lower() == "yoso":
+                    continue
+                r = race_ev_ratio(g["horse_number"], g["p_c"].to_numpy(), g["p_a"].to_numpy(),
+                                  {c: float(lo) for c, lo, _ in rows}, bet)
+                exotic[(rid, bet)] = r.sort_values("ev", ascending=False)
+
     stamp = datetime.now()
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{date}_{stamp:%H%M}_{name}.csv"
@@ -269,12 +285,20 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None):
         b = g[g["bet"]].sort_values("ev", ascending=False)
         buy = " / ".join(f"{int(r.horse_number)}番 {r.horse_name} {r.win_odds:.1f}倍 勝率{r.p_c:.1%} 期待値{r.ev:.2f}" for r in b.itertuples())
         print(f"{head}: {'【買い】 ' + buy if len(b) else '見送り'}" + (f"  ※{' / '.join(w)}" if w else ""))
+        for bet in bets or []:
+            r = exotic.get((rid, bet))
+            if r is None or r.empty:
+                continue
+            top = r[r["ev"] >= exotic_th].head(5)
+            label = {"trio": "3連複", "trifecta": "3連単"}[bet]
+            print(f"      （参考・未検証）{label} 期待値{exotic_th}以上 {int((r['ev'] >= exotic_th).sum())}通り"
+                  + (": " + " / ".join(f"{c[0:2]}-{c[2:4]}-{c[4:6]} {o:.1f}倍 期待値{e:.2f}" for c, o, e in zip(top['combo'], top['odds'], top['ev'])) if len(top) else ""))
     print()
     print(f"保存: {out}")
     return d
 
 
-def watch(name, date, lead=15, poll=60):
+def watch(name, date, lead=15, poll=60, bets=None):
     """発走が近づいたレースから順に、直前に予測する（当日バイアスに、そのレースまでに終わった全レースの結果が入る）。
     発走の lead 分前を過ぎたレースを、まとめて1回予測する。特徴量の作成に3分ほどかかるので lead は10分以上にする"""
     import time
@@ -291,7 +315,7 @@ def watch(name, date, lead=15, poll=60):
         due = [r for r, p in day if r not in done and now + timedelta(minutes=2) <= p <= now + timedelta(minutes=lead)]
         done |= {r for r, p in day if p < now + timedelta(minutes=2)}   # 間に合わなかったレースは飛ばす
         if due:
-            live(name, date, races=due)
+            live(name, date, races=due, bets=bets)
             done |= set(due)
         if all(p < datetime.now() for _, p in day):
             print("最終レースが発走したので終了")
@@ -312,16 +336,19 @@ def main():
     ap.add_argument("--within", type=int, help="--live で、発走まで N 分以内のレースだけ")
     ap.add_argument("--watch", action="store_true", help="--live を開催日の間ずっと続け、発走が近づいたレースから順に予測する")
     ap.add_argument("--lead", type=int, default=15, help="--watch で、発走の何分前に予測するか（既定15分）")
+    ap.add_argument("--bets", type=lambda s: s.split(","), help="--live で参考に出す組み合わせ券（trio,trifecta）。未検証")
+    ap.add_argument("--exotic-th", type=float, default=2.0, help="--bets の期待値の目安（既定2.0）")
     ap.add_argument("--as-of", help="動作確認用。--live の「今」を上書きする（例 '2026-09-06 09:00'。2026-09-07 以降は前向き検証の期間なので使わない）")
     args = ap.parse_args()
     if args.live and args.watch:
-        watch(args.candidate, args.date, args.lead)
+        watch(args.candidate, args.date, args.lead, bets=args.bets)
         return
     if args.live:
         now = pd.Timestamp(args.as_of).to_pydatetime() if args.as_of else None
         if now and now >= datetime(2026, 9, 7):
             raise SystemExit("--as-of に前向き検証の期間（2026-09-07 以降）は使わない")
-        live(args.candidate, args.date, args.races, args.within, LIVE_DIR if not now else LIVE_DIR / "test", now)
+        live(args.candidate, args.date, args.races, args.within, LIVE_DIR if not now else LIVE_DIR / "test", now,
+             args.bets, args.exotic_th)
         return
     if args.start and args.snapshot_dir == SNAPSHOT_DIR:
         raise SystemExit("--start は動作確認（--snapshot-dir 指定）のときだけ使える")

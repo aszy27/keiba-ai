@@ -162,9 +162,12 @@ python -m evaluate --tag res_mkt --base base_pl3 --res-years 0 --half-life 730 -
 ```bash
 python -m predict --candidate cand2 --live --watch    # 開催日の間ずっと、発走15分前になったレースから順に買い目を出す
 python -m predict --candidate cand2 --live --within 20   # 発走まで20分以内のレースだけ1回
+python -m predict --candidate cand2 --live --watch --bets trio,trifecta   # 3連複・3連単の期待値も参考に出す（未検証）
 ```
 * 出馬表・今日終わったレースの結果・その時点のオッズを取り、学習と同じ関数で特徴量を作って、期待値1.3以上の単勝を出します（1回3〜4分）。
   結果は `result/live/` に保存。オッズは発走直前まで動くので、買う直前のオッズで期待値が変わる点に注意。
+* `--bets trio,trifecta` は、勝率から Plackett-Luce（λ=0.75）で組み合わせの確率を作り、組み合わせ券の市場の値付けを出発点にした「比の方式」で期待値を出します（`model/exotic.py`）。
+  2020年の3連複ではオッズに無い情報（対数尤度 +0.029）は確認できましたが、回収率100%超えは確かめられていないので、あくまで参考です。
 * 取れない項目（枠順・天候・馬場・馬体重・追い切り評価）は既定値で埋めずに警告します。警告が出たレースは学習時と条件がずれています。
 * **まだ前向き検証の判定前なので、実際に賭けるかどうかは判定の後に決めます。**
 
