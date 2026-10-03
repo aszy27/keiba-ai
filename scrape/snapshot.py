@@ -10,6 +10,7 @@
 #         python -m scrape snapshot --minutes 10,5,3
 #         python -m scrape snapshot --date 20260913 --now    # 指定日の全レースを今すぐ1回取得（動作確認用）
 #         （動作確認で本番のデータに混ぜたくないときは --out-dir で保存先を変える）
+import json
 import random
 import re
 import time
@@ -31,6 +32,8 @@ COLS = ["race_id", "horse_number", "win_odds", "popularity", "place_odds_min", "
 LADDER = [60, 30, 20, 15, 10, 7, 5, 3, 2, 1]   # 発走の何分前に取るか
 TICK_SEC = 20        # 予定を確認する間隔
 GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切直後の値も残す）
+LIMIT_STREAK = 3     # API の status=limit がこの回数続いたら控える
+LIMIT_PAUSE_MIN = 15
 
 
 def race_schedule(date):
@@ -67,11 +70,46 @@ def fetch_odds(race_id):
 
 
 def load_done(path):
-    """途中から起動しても、取得済みの (race_id, 何分前) は飛ばす"""
+    """途中から起動しても、取得済みの (race_id, 何分前) は飛ばす。API が制限中（status=limit）で取れなかった行は数えない"""
     if not path.exists():
         return set()
-    d = pd.read_csv(path, usecols=["race_id", "minutes_before"], dtype={"race_id": str}, on_bad_lines="skip")
+    d = pd.read_csv(path, usecols=["race_id", "minutes_before", "api_status"], dtype={"race_id": str}, on_bad_lines="skip")
+    d = d[d["api_status"].astype(str).str.strip() != "limit"]
     return set(zip(d["race_id"], pd.to_numeric(d["minutes_before"], errors="coerce")))
+
+
+class LimitBackoff:
+    """API が status=limit（制限中）を返し続けたら控える（2026-10-03 の制限への対策）。
+    LIMIT_STREAK 回続いたら LIMIT_PAUSE_MIN 分は取りに行かず、そのあと1回だけ試す。それも limit ならまた控える。
+    控えている間も予定（発走後 GRACE_SEC 秒まで）は捨てないので、途中で解ければその時点のオッズを取れる。
+    状態はファイルに残すので、タスクスケジューラが30分ごとに起動し直しても控え続ける。制限が無いときの動きは変えない"""
+
+    def __init__(self, path):
+        self.path = path
+        self.streak = 0
+
+    def _until(self):
+        try:
+            return datetime.fromisoformat(json.loads(self.path.read_text(encoding="utf-8"))["until"])
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def allow(self, now):
+        until = self._until()
+        return until is None or now >= until
+
+    def record(self, status, now):
+        if str(status).strip() == "limit":
+            self.streak += 1
+            if self.streak >= LIMIT_STREAK or self._until() is not None:
+                until = now + timedelta(minutes=LIMIT_PAUSE_MIN)
+                self.path.write_text(json.dumps({"until": until.isoformat(timespec="seconds")}), encoding="utf-8")
+                print(f"  API が制限中（status=limit）なので {until:%H:%M} まで控える", flush=True)
+        else:
+            self.streak = 0
+            if self.path.exists():
+                self.path.unlink()
+                print("  制限が解けた", flush=True)
 
 
 def save(path, rows, race_id, minutes, post, status):
@@ -105,6 +143,7 @@ def run(args):
 
     minutes = sorted((int(m) for m in args.minutes.split(",")) if args.minutes else LADDER, reverse=True)
     done = load_done(out)
+    backoff = LimitBackoff(out_dir / "limit_state.json")
     print(f"取得予定: 1レースあたり {minutes} 分前 / 取得済み {len(done)} 件", flush=True)
     while True:
         now = datetime.now()
@@ -117,8 +156,14 @@ def run(args):
             time.sleep(TICK_SEC)
             continue
         for post, rid, m in sorted(due):
+            if not backoff.allow(datetime.now()):
+                break                     # 控えている間は取りに行かない（予定は捨てない）
             rows, status = fetch_odds(rid)
             save(out, rows, rid, m, post, status)
-            done.add((rid, m))
+            if str(status).strip() != "limit":
+                done.add((rid, m))        # 制限中で取れなかったものは、解けたら取り直す
+            backoff.record(status, datetime.now())
             time.sleep(random.uniform(1.0, 2.0))
+        if not backoff.allow(datetime.now()):
+            time.sleep(TICK_SEC)
     print("完了:", out)
