@@ -181,6 +181,16 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                     return
                 rows, status = fetch_exotic(rid, bet_type, session)
                 n_req += 1
+                if not rows and str(status).strip() == "limit":
+                    # 短い間に続けて取ると API が制限をかける（2026-10-03 に判明）。オッズが無いのではないので記録せず、15分控える
+                    n_fail += 1
+                    print(f"  {rid} API が制限中（status=limit）。15分控える（{n_fail}回目）", flush=True)
+                    if n_fail >= 3:
+                        save_exotic(buf, year, bet_type)
+                        print("制限が続くので今日は終了（続きは次回）", flush=True)
+                        return
+                    time.sleep(15 * 60)
+                    continue
                 if not rows:
                     print(f"  {rid} 取得できず（{status}）", flush=True)
                     if str(status).startswith("error"):

@@ -14,6 +14,7 @@
 #         python -m predict --candidate cand2 --live --watch   # 開催日の間ずっと、発走15分前になったレースから順に予測する
 import argparse
 import json
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -230,15 +231,20 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None, bets=N
     f = f[f["race_id"].isin(ids) & (f["status"] == "entry")].reset_index(drop=True)
 
     odds = []
-    for rid in ids:
+    from scrape.snapshot import API_SPACING_SEC
+    for i, rid in enumerate(ids):
+        if i:
+            time.sleep(random.uniform(*API_SPACING_SEC))   # 短い間に続けて取ると API が制限（status=limit）をかける
         rows, status = fetch_odds(rid)
         if not rows:
             warns.setdefault(rid, []).append(f"オッズを取得できない（{status}）")
+        elif str(status).lower() == "limit":
+            warns.setdefault(rid, []).append("API が制限中（status=limit）でオッズを取れない")
+            continue
         elif str(status).lower() == "yoso":   # 発売前の予想オッズ
             warns.setdefault(rid, []).append("まだ発売前の予想オッズしか無い（予測しない）")
             continue
         odds += rows
-        time.sleep(1.0)
     if not odds:
         for rid in ids:
             print(f"  {rid}: {' / '.join(warns.get(rid, []))}")
@@ -283,8 +289,8 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None, bets=N
         sess = requests.Session()
         for rid, g in d.groupby("race_id", sort=False):
             for bet in bets:
+                time.sleep(random.uniform(*API_SPACING_SEC))
                 rows, status = fetch_exotic(rid, BET_TYPES[bet], sess)
-                time.sleep(1.0)
                 if not rows or str(status).lower() == "yoso":
                     continue
                 r = race_ev_ratio(g["horse_number"], g["p_c"].to_numpy(), g["p_a"].to_numpy(),

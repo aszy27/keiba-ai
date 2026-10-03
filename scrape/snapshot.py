@@ -32,6 +32,7 @@ COLS = ["race_id", "horse_number", "win_odds", "popularity", "place_odds_min", "
 LADDER = [60, 30, 20, 15, 10, 7, 5, 3, 2, 1]   # 発走の何分前に取るか
 TICK_SEC = 20        # 予定を確認する間隔
 GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切直後の値も残す）
+API_SPACING_SEC = (15, 20)   # オッズの API への間隔（秒）。短い間に続けて取ると status=limit（制限）になる（2026-10-03 に判明）
 LIMIT_STREAK = 3     # API の status=limit がこの回数続いたら控える
 LIMIT_PAUSE_MIN = 15
 
@@ -137,7 +138,7 @@ def run(args):
         for rid, post in schedule:
             rows, status = fetch_odds(rid)
             save(out, rows, rid, -1, post, status)
-            time.sleep(random.uniform(1.0, 2.0))
+            time.sleep(random.uniform(*API_SPACING_SEC))
         print("完了:", out)
         return
 
@@ -155,15 +156,20 @@ def run(args):
                 break
             time.sleep(TICK_SEC)
             continue
-        for post, rid, m in sorted(due):
+        # 起動し直した直後などで同じレースの予定がいくつもたまっていたら、1回だけ取って一番近い予定として保存し、
+        # たまっていた古い予定はまとめて片付ける（同じオッズを続けて何度も取らない）。普段は1レースに1つしか同時にたまらない
+        latest = {}
+        for post, rid, m in due:
+            latest.setdefault(rid, []).append(m)
+        for post, rid, m in sorted({(p_, r_, min(latest[r_])) for p_, r_, _ in due}):
             if not backoff.allow(datetime.now()):
                 break                     # 控えている間は取りに行かない（予定は捨てない）
             rows, status = fetch_odds(rid)
             save(out, rows, rid, m, post, status)
             if str(status).strip() != "limit":
-                done.add((rid, m))        # 制限中で取れなかったものは、解けたら取り直す
+                done.update((rid, mm) for mm in latest[rid])   # 制限中で取れなかったものは、解けたら取り直す
             backoff.record(status, datetime.now())
-            time.sleep(random.uniform(1.0, 2.0))
+            time.sleep(random.uniform(*API_SPACING_SEC))
         if not backoff.allow(datetime.now()):
             time.sleep(TICK_SEC)
     print("完了:", out)
