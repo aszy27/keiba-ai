@@ -29,12 +29,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
            "Referer": "https://race.netkeiba.com/", "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"}
 COLS = ["race_id", "horse_number", "win_odds", "popularity", "place_odds_min", "place_odds_max",
         "minutes_before", "seconds_to_post", "post_time", "fetched_at", "official_datetime", "api_status"]
-LADDER = [60, 30, 20, 15, 10, 7, 5, 3, 2, 1]   # 発走の何分前に取るか
+LADDER = [10, 3]   # 発走の何分前に取るか。判定に使うのは 3分前（無ければ10分前）。API は10〜15分に5回ほどで制限をかけるので絞った（2026-10-03。以前は 60/30/20/15/10/7/5/3/2/1）
 TICK_SEC = 20        # 予定を確認する間隔
 GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切直後の値も残す）
 API_SPACING_SEC = (15, 20)   # オッズの API への間隔（秒）。短い間に続けて取ると status=limit（制限）になる（2026-10-03 に判明）
 LIMIT_STREAK = 3     # API の status=limit がこの回数続いたら控える
-LIMIT_PAUSE_MIN = 15
+LIMIT_PAUSE_MIN = 6   # 次の予定（3分前など）に間に合うよう短めに
 
 
 def race_schedule(date):
