@@ -117,7 +117,8 @@ keiba/
 ├── train.py                # ③ 学習
 ├── evaluate.py             # ④ 検証
 ├── predict.py              # ⑤ 実践
-├── live/                   # 当日の運用: entries.py（出馬表・今日の結果の取り込み）、スナップショットの自動実行（タスクスケジューラ keiba-odds-snapshot → run_snapshot_hidden.vbs → run_snapshot.ps1）
+├── live/                   # 当日・毎週の運用: entries.py（出馬表・今日の結果の取り込み）、タスクスケジューラ用のスクリプト
+│                               （keiba-odds-snapshot: スナップショット / keiba-exotic-odds: 組み合わせ券の確定オッズ / keiba-weekly-ingest: 毎週の取り込み）
 ├── experiments/            # 結論が出た検証（特徴量・モデルの種類・券種・地方競馬・技術の探索など。結果は docs/rebuild_plan.md）
 ├── tests/                  # リークテスト・検査・目的関数のテスト
 ├── paths.py                # データの置き場所
@@ -132,7 +133,7 @@ keiba/
 ## 実行手順
 **準備**: `pip install -r requirements.txt`。スクリプトは `C:\Users\aassz\anaconda3\envs\keiba-ai\python.exe` で、リポジトリの直下から実行します。
 
-**① ② 毎週（開催の翌週の月〜火）**
+**① ② 毎週（自動: タスクスケジューラ `keiba-weekly-ingest` が月曜の20時に `live/run_weekly.ps1` で下の順に実行。ログは `logs/weekly_YYYYMMDD.log`）**
 ```bash
 python -m scrape weekly          # 結果・血統・ラップ・払戻・追い切り・オッズの取得と欠損の補完
 python -m prep.ingest            # CSV → data/v2/*.parquet（取り込みのたびにデータを検査）
@@ -143,7 +144,7 @@ python -m predict --candidate c_all   # ⑤ 前向き検証が何Rたまった�
 ```
 
 **開催日（自動）**: タスクスケジューラの `keiba-odds-snapshot` が毎日 8:00 から30分おきに `live/run_snapshot_hidden.vbs` を起動し、
-開催日なら発走60〜1分前のオッズを `data/v2/odds_snapshots/` に取ります。開催日は PC の電源を切らないでください（スリープは可）。
+開催日なら発走60〜1分前のオッズを **JRA 公式サイト**から `data/v2/odds_snapshots/` に取ります（netkeiba の API はログインしていない人の閲覧回数が1日5回までのため）。開催日は PC の電源を切らないでください（スリープは可）。
 手動で確かめるときは `python -m scrape snapshot --now --out-dir <作業用フォルダ>`。
 
 **③ 学習**（候補を登録したときに1回。登録後は作り直さない）

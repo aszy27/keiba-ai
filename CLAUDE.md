@@ -23,6 +23,8 @@ netkeiba のオッズの API は、ログインしていない人の閲覧回数
   冷却期間中は発走前オッズのスナップショット以外は取りに行かない。ブロックされたら IP や User-Agent を変えて取り続けるような回避はしない。
 - **組み合わせ券のオッズの取り足し**: タスクスケジューラ `keiba-exotic-odds`（月〜木10時、`live/run_exotic_fetch.ps1`、ログ `logs/exotic_*.log`）が
   2021〜2025年の3連複・3連単の確定オッズを1日3,000リクエストずつ取る。そろったら `docs/rebuild_plan.md`「3連複・3連単の検証の手順」どおりに判定する。
+- **毎週の取り込みは自動**: タスクスケジューラ `keiba-weekly-ingest`（月曜20時、`live/run_weekly.ps1`、ログ `logs/weekly_YYYYMMDD.log`）が
+  scrape weekly → prep.ingest（ERROR なら止める）→ prep.features → テスト → 前向き検証の集計 を行う。
 - スナップショットはタスクスケジューラ（`keiba-odds-snapshot` → `live/run_snapshot_hidden.vbs`）が毎日起動して貯める。**開催日はPCの電源を切らないこと**（スリープは可）。
   9/26〜27 は電源オフで取れず、取得開始は 2026-10-03 の見込み。
 - 開発の追加の検証は `python -m evaluate`（2026-09-06 までのデータだけを使う。`features.parquet` には前向き検証の期間も入っているので読み込み直後に捨てる）。
