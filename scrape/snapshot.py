@@ -29,10 +29,10 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
            "Referer": "https://race.netkeiba.com/", "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"}
 COLS = ["race_id", "horse_number", "win_odds", "popularity", "place_odds_min", "place_odds_max",
         "minutes_before", "seconds_to_post", "post_time", "fetched_at", "official_datetime", "api_status"]
-LADDER = [10, 3]   # 発走の何分前に取るか。判定に使うのは 3分前（無ければ10分前）。API は10〜15分に5回ほどで制限をかけるので絞った（2026-10-03。以前は 60/30/20/15/10/7/5/3/2/1）
+LADDER = [60, 30, 20, 15, 10, 7, 5, 3, 2, 1]   # 発走の何分前に取るか（判定に使うのは 3分前 → 10分前 → 30分前）
 TICK_SEC = 20        # 予定を確認する間隔
 GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切直後の値も残す）
-API_SPACING_SEC = (15, 20)   # オッズの API への間隔（秒）。短い間に続けて取ると status=limit（制限）になる（2026-10-03 に判明）
+API_SPACING_SEC = (5, 8)   # オッズの取得の間隔（秒）。JRA 公式から取る。netkeiba の API は閲覧回数の制限がある（2026-10-03）
 LIMIT_STREAK = 3     # API の status=limit がこの回数続いたら控える
 LIMIT_PAUSE_MIN = 6   # 次の予定（3分前など）に間に合うよう短めに
 
@@ -52,7 +52,19 @@ def race_schedule(date):
     return sorted(races.items(), key=lambda x: x[1])
 
 
-def fetch_odds(race_id):
+def fetch_odds(race_id, date=None):
+    """発売中の単勝・複勝 → (行, 状態)。JRA 公式から取り、取れなければ netkeiba の API（ログインしていない人は1日5回まで）"""
+    if date:
+        from scrape import jra_odds
+        rows, status = jra_odds.fetch_odds(race_id, date)
+        if rows or status == "jra_presale":
+            for r in rows:
+                r.setdefault("official_datetime", "")
+            return rows, status
+    return fetch_odds_netkeiba(race_id)
+
+
+def fetch_odds_netkeiba(race_id):
     r, status = http_get(ODDS_API.format(race_id=race_id, bet_type=1, action="update"),
                          referer="https://race.netkeiba.com/", honor_cooldown=False)
     if r is None:
@@ -136,7 +148,7 @@ def run(args):
 
     if args.now:
         for rid, post in schedule:
-            rows, status = fetch_odds(rid)
+            rows, status = fetch_odds(rid, args.date)
             save(out, rows, rid, -1, post, status)
             time.sleep(random.uniform(*API_SPACING_SEC))
         print("完了:", out)
@@ -164,7 +176,7 @@ def run(args):
         for post, rid, m in sorted({(p_, r_, min(latest[r_])) for p_, r_, _ in due}):
             if not backoff.allow(datetime.now()):
                 break                     # 控えている間は取りに行かない（予定は捨てない）
-            rows, status = fetch_odds(rid)
+            rows, status = fetch_odds(rid, args.date)
             save(out, rows, rid, m, post, status)
             if str(status).strip() != "limit":
                 done.update((rid, mm) for mm in latest[rid])   # 制限中で取れなかったものは、解けたら取り直す

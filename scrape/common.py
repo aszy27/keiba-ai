@@ -106,9 +106,15 @@ def _pace(host):
     _last_request[host] = _now()
 
 
-def http_get(url, referer=None, timeout=20, tries=3, honor_cooldown=True):
+def http_post(url, data, referer=None, timeout=20, tries=3, honor_cooldown=True):
+    """http_get と同じ（間隔の制御・再試行・ブロックの検知と冷却期間）で、フォームを POST する（JRA のオッズのページ用）"""
+    return http_get(url, referer, timeout, tries, honor_cooldown, data=data)
+
+
+def http_get(url, referer=None, timeout=20, tries=3, honor_cooldown=True, data=None):
     """(Response または None, 状態)。状態: ok / not_found / block / cooldown / network_error / http_NNN。
-    honor_cooldown=False（発走前オッズのスナップショット用）は冷却期間中でも取りに行く（ブロックの兆候は数える）"""
+    honor_cooldown=False（発走前オッズのスナップショット用）は冷却期間中でも取りに行く（ブロックの兆候は数える）。
+    data を渡すと POST になる（http_post）"""
     if honor_cooldown and cooldown_until() is not None:
         return None, "cooldown"
     host = urlparse(url).netloc
@@ -116,7 +122,9 @@ def http_get(url, referer=None, timeout=20, tries=3, honor_cooldown=True):
     for attempt in range(tries):
         _pace(host)
         try:
-            r = shared_session().get(url, headers={"Referer": referer or f"https://{host}/"}, timeout=timeout)
+            headers = {"Referer": referer or f"https://{host}/"}
+            r = (shared_session().post(url, data=data, headers=headers, timeout=timeout) if data is not None
+                 else shared_session().get(url, headers=headers, timeout=timeout))
         except requests.RequestException as e:
             status = "network_error"
             print(f"   ⚠️ 通信エラー（{type(e).__name__}）。{5 * 3 ** attempt}秒待って再試行", flush=True)

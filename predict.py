@@ -204,8 +204,8 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None, bets=N
     print(f"[{name}] {date} の {len(ids)}R（{sched[0][1]:%H:%M}〜{sched[-1][1]:%H:%M}）/ 期待値{cfg['threshold']}以上の単勝", flush=True)
 
     # 発売前（予想オッズしか無い）なら、3分かけて特徴量を作る前に止める（オッズは特徴量を作った後に取り直す）
-    _, first_status = fetch_odds(ids[0])
-    if str(first_status).lower() == "yoso":
+    _, first_status = fetch_odds(ids[0], date)
+    if str(first_status).lower() in ("yoso", "jra_presale"):
         print(f"  {ids[0]}: まだ発売前の予想オッズしか無いので予測しない（発売が始まってから実行する）")
         return None
     from live.entries import fetch_finished
@@ -235,13 +235,13 @@ def live(name, date, races=None, within=None, out_dir=LIVE_DIR, now=None, bets=N
     for i, rid in enumerate(ids):
         if i:
             time.sleep(random.uniform(*API_SPACING_SEC))   # 短い間に続けて取ると API が制限（status=limit）をかける
-        rows, status = fetch_odds(rid)
+        rows, status = fetch_odds(rid, date)
         if not rows:
             warns.setdefault(rid, []).append(f"オッズを取得できない（{status}）")
         elif str(status).lower() == "limit":
             warns.setdefault(rid, []).append("API が制限中（status=limit）でオッズを取れない")
             continue
-        elif str(status).lower() == "yoso":   # 発売前の予想オッズ
+        elif str(status).lower() in ("yoso", "jra_presale"):   # 発売前（予想オッズ・数字がまだ無い）
             warns.setdefault(rid, []).append("まだ発売前の予想オッズしか無い（予測しない）")
             continue
         odds += rows
