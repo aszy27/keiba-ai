@@ -19,7 +19,7 @@ public static extern uint SetThreadExecutionState(uint esFlags);
 
 function Step($name, $cmd) {
     "=== $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $name ===" | Out-File -FilePath $log -Append -Encoding utf8
-    & cmd /c """$py"" $cmd >> ""$log"" 2>&1"
+    & cmd /c """$py"" -u $cmd >> ""$log"" 2>&1"
     $code = $LASTEXITCODE
     "=== $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $name 終了 (exit=$code) ===" | Out-File -FilePath $log -Append -Encoding utf8
     return $code
