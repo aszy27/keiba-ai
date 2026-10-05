@@ -453,5 +453,5 @@ def run(args):
     if args.dry_run:
         print("\n（--dry-run のため保存していません）")
     else:
-        print("\n💡 この後 python -m scrape repair → evaluate_dump.py の順で実行してください。")
+        print("\n💡 この後 python -m scrape repair → python -m prep.ingest → python -m prep.features の順で実行してください。")
 

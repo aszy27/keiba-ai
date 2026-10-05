@@ -235,5 +235,5 @@ def run(all_dirs=False, dry_run=False):
     for f in files:
         repair_file(f, dry_run)
     if not dry_run:
-        print("\n💡 修復後は evaluate_main.py / evaluate_dump.py を再実行するとバックテストに反映されます。")
+        print("\n💡 修復後は python -m prep.ingest → python -m prep.features で取り込むと反映されます。")
 
