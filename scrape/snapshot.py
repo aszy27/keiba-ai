@@ -1,7 +1,7 @@
 # scrape/snapshot.py
-# 開催日のレースについて、発走前のオッズを何度も保存する（購入時点のオッズでの検証と、オッズの動きの記録のため）。
-# 既定は発走の 60/30/20/15/10/7/5/3/2/1 分前。判定に使うのは3分前（docs/rebuild_plan.md「前向き検証」）だが、
-# 取りこぼし対策と、締切直前のオッズの動きを残すために多めに取る。
+# 開催日のレースについて、発走前のオッズを保存する（購入時点のオッズでの検証のため）。
+# 発走の 30/10/3 分前に取る。判定に使うのは 3分前 → 10分前 → 30分前（docs/rebuild_plan.md「前向き検証」）。
+# オッズの動き（時系列）は使わないので、判定に使う時点だけを取る（2026-10-06）。
 # 開催日の朝に起動しておくと、最終レースまで待機しながら取得を続ける（PCがスリープしないようにしておく）。
 # 実際にはタスクスケジューラ（keiba-odds-snapshot → live/run_snapshot_hidden.vbs → live/run_snapshot.ps1）が毎日起動する。
 # 前向き検証の判定に使うデータなので、取得のタイミング・保存形式は判定まで変えないこと。
@@ -29,7 +29,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
            "Referer": "https://race.netkeiba.com/", "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"}
 COLS = ["race_id", "horse_number", "win_odds", "popularity", "place_odds_min", "place_odds_max",
         "minutes_before", "seconds_to_post", "post_time", "fetched_at", "official_datetime", "api_status"]
-LADDER = [60, 30, 20, 15, 10, 7, 5, 3, 2, 1]   # 発走の何分前に取るか（判定に使うのは 3分前 → 10分前 → 30分前）
+LADDER = [30, 10, 3]   # 発走の何分前に取るか（判定に使うのは 3分前 → 10分前 → 30分前）
 TICK_SEC = 20        # 予定を確認する間隔
 GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切直後の値も残す）
 API_SPACING_SEC = (5, 8)   # オッズの取得の間隔（秒）。JRA 公式から取る。netkeiba の API は閲覧回数の制限がある（2026-10-03）
