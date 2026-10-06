@@ -1,13 +1,14 @@
 # scrape/odds.py
 # netkeiba のオッズAPIから確定オッズを取る。1レース1リクエスト。途中で止めても再実行で続きから取れる。
 #  - 単勝・複勝: 各馬の確定単勝オッズ・人気・複勝オッズ（下限/上限）→ data/odds_api_progress.csv
-#  - 組み合わせ券（全通り）: 4=馬連 / 5=ワイド（下限・上限）/ 7=3連複 / 8=3連単 → data/v2/odds_exotic/<年>_type<券種>.parquet
+#  - 組み合わせ券（全通り）: 4=馬連 / 5=ワイド（下限・上限）/ 6=馬単 / 7=3連複 / 8=3連単 → data/v2/odds_exotic/<年>_type<券種>.parquet
 #    払戻は「当たった組み合わせのオッズ×100」で計算できるので、払戻データが無いレースも検証に使える。
 #    3連単は最大4,896通りあるので、年・券種ごとに分けて保存する。
 # 発走前のオッズ（前向き検証のスナップショット）は scrape/snapshot.py。
 #
 # 使い方: python -m scrape odds --years 2024,2025,2026
 #         python -m scrape odds-exotic --years 2020 --types 7,8 [--limit 500]
+#         python -m scrape odds-exotic --job 2021-2025:7,8 --job 2020-2025:4,6 --max-requests 3000   # 前から順に、上限を共有して取る
 # 注意: 2026-09-17 に短時間で大量に取って API から一時ブロックされた。間隔を詰めないこと。
 import glob
 import os
@@ -24,7 +25,7 @@ from scrape.common import DATA_DIR, DATA_SEARCH_DIRS, ODDS_API, create_session, 
 
 FILE_OUT = str(DATA_DIR / "odds_api_progress.csv")
 COLS = ["race_id", "horse_number", "win_odds", "popularity", "place_min", "place_max", "official_datetime"]
-EXOTIC_NAMES = {4: "馬連", 5: "ワイド", 7: "3連複", 8: "3連単"}
+EXOTIC_NAMES = {4: "馬連", 5: "ワイド", 6: "馬単", 7: "3連複", 8: "3連単"}
 EXOTIC_SAVE_EVERY = 100
 
 
@@ -158,7 +159,8 @@ def load_empty():
 
 def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_after_fail=20):
     """年 → 券種の順に、取得していないレースを取る。max_requests は今回の実行全体の上限、
-    stop_after_fail 回続けて取れなければブロックの兆候とみて止める（翌日に続きから取れる）"""
+    stop_after_fail 回続けて取れなければブロックの兆候とみて止める（翌日に続きから取れる）。
+    戻り値: (今回のリクエスト数, 最後まで取り終えたか)"""
     from paths import table_path
     exotic_path(0, 0).parent.mkdir(parents=True, exist_ok=True)
     races = pd.read_parquet(table_path("races"), columns=["race_id", "race_date"])
@@ -178,7 +180,7 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                 if max_requests is not None and n_req >= max_requests:
                     save_exotic(buf, year, bet_type)
                     print(f"今回の上限 {max_requests}回に達したので終了（続きは次回）", flush=True)
-                    return
+                    return n_req, False
                 rows, status = fetch_exotic(rid, bet_type, session)
                 n_req += 1
                 if not rows and str(status).strip() == "limit":
@@ -188,7 +190,7 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                     if n_fail >= 3:
                         save_exotic(buf, year, bet_type)
                         print("制限が続くので今日は終了（続きは次回）", flush=True)
-                        return
+                        return n_req, False
                     time.sleep(15 * 60)
                     continue
                 if not rows:
@@ -198,7 +200,7 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                         if n_fail >= stop_after_fail:
                             save_exotic(buf, year, bet_type)
                             print(f"{stop_after_fail}回続けて取得できない（ブロックの兆候）ので終了", flush=True)
-                            return
+                            return n_req, False
                     else:   # API は答えたがオッズが無い（取消・中止など）→ 記録して次から飛ばす
                         pd.DataFrame([{"race_id": rid, "bet_type": bet_type, "status": status}]).to_csv(
                             empty_path(), mode="a", index=False, header=not empty_path().exists())
@@ -214,3 +216,29 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                           flush=True)
             save_exotic(buf, year, bet_type)
             print(f"{year}年 {EXOTIC_NAMES[bet_type]}: 完了 {len(todo)}R", flush=True)
+    return n_req, True
+
+
+def parse_job(text):
+    """"2021-2025:7,8" → ([2021, ..., 2025], [7, 8])。年は "2020,2022" のようにカンマ区切りでもよい"""
+    years, types = text.split(":")
+    ys = []
+    for part in years.split(","):
+        a, _, b = part.partition("-")
+        ys += list(range(int(a), int(b or a) + 1))
+    return ys, [int(t) for t in types.split(",")]
+
+
+def run_exotic_jobs(jobs, limit=None, sleep=0.7, max_requests=None):
+    """(年のリスト, 券種のリスト) を前から順に取る。リクエスト数の上限は全体で共有し、
+    前のジョブを取り終えてから次へ進む（上限・制限・ブロックの兆候で止まったらそこで終わり）"""
+    used = 0
+    for years, types in jobs:
+        left = None if max_requests is None else max_requests - used
+        if left is not None and left <= 0:
+            print(f"今回の上限 {max_requests}回に達したので終了（続きは次回）", flush=True)
+            return
+        n, finished = run_exotic(years, types, limit, sleep, left)
+        used += n
+        if not finished:
+            return

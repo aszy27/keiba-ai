@@ -8,6 +8,7 @@
 #   python -m scrape extras                      # ラップ・払戻・追い切り・生産者 → data/*_progress.csv
 #   python -m scrape odds [--years 2026]         # 確定の単勝・複勝オッズ → data/odds_api_progress.csv
 #   python -m scrape odds-exotic --years 2020 [--types 7,8] [--limit 500]   # 組み合わせ券の確定オッズ
+#   python -m scrape odds-exotic --job 2021-2025:7,8 --job 2020-2025:4,6 [--max-requests 3000]   # 前のジョブから順に取る
 #   python -m scrape repair [--all] [--dry-run]  # レース情報の欠損補完・偽レースの削除
 #   python -m scrape rescrape (--ids ID,... | --auto) [--year Y] [--dry-run]   # 指定レースを取り直す
 #   python -m scrape snapshot [--date YYYYMMDD] [--now]   # 発走前オッズのスナップショット（前向き検証。タスクスケジューラが毎日起動）
@@ -30,8 +31,9 @@ def main():
     p = sub.add_parser("odds", help="確定の単勝・複勝オッズ")
     p.add_argument("--years", default=str(this_year), help="カンマ区切り（例: 2024,2025,2026）")
     p = sub.add_parser("odds-exotic", help="組み合わせ券の確定オッズ")
-    p.add_argument("--years", required=True)
-    p.add_argument("--types", default="7,8", help="4=馬連 / 5=ワイド / 7=3連複 / 8=3連単")
+    p.add_argument("--years", help="カンマ区切り（--job を使わないとき）")
+    p.add_argument("--types", default="7,8", help="4=馬連 / 5=ワイド / 6=馬単 / 7=3連複 / 8=3連単")
+    p.add_argument("--job", action="append", help="年:券種（例 2021-2025:7,8）。複数指定すると前から順に、リクエスト数の上限を共有して取る")
     p.add_argument("--limit", type=int, help="1回の実行で取るレース数の上限")
     p.add_argument("--sleep", type=float, default=0.7)
     p.add_argument("--max-requests", type=int, help="今回の実行全体のリクエスト数の上限")
@@ -71,8 +73,13 @@ def main():
             print("金〜日は取得しない（--weekdays-only）")
             return
         from scrape import odds
-        odds.run_exotic([int(y) for y in args.years.split(",")], [int(t) for t in args.types.split(",")],
-                        args.limit, args.sleep, args.max_requests)
+        if args.job:
+            jobs = [odds.parse_job(j) for j in args.job]
+        elif args.years:
+            jobs = [([int(y) for y in args.years.split(",")], [int(t) for t in args.types.split(",")])]
+        else:
+            ap.error("odds-exotic には --years か --job が必要")
+        odds.run_exotic_jobs(jobs, args.limit, args.sleep, args.max_requests)
     if args.cmd in ("weekly", "repair"):
         from scrape import repair
         repair.run(all_dirs=getattr(args, "all", False), dry_run=getattr(args, "dry_run", False))
