@@ -24,6 +24,7 @@ netkeiba のオッズの API は、ログインしていない人の閲覧回数
 - **組み合わせ券のオッズの取り足し**: タスクスケジューラ `keiba-exotic-odds`（月〜木0時、`live/run_exotic_fetch.ps1`、ログ `logs/exotic_*.log`）が
   2021〜2025年の3連複・3連単 → 2020年の3連単 → 2020〜2025年の馬連・馬単 の順に、確定オッズを1日3,000リクエストずつ取る（10月末〜11月下旬の見込み）。
   そろったら `docs/rebuild_plan.md`「3連複・3連単の検証の手順」「馬連・馬単の検証の手順」（どちらも事前登録済み）どおりに判定する。
+  合格しても、すぐには賭けない。「組み合わせ券の前向き検証と掛け金の決め方」（発走前のオッズで1,000R、資金5万円・1レース5点まで）に合格してから賭ける。
 - **毎週の取り込みは自動**: タスクスケジューラ `keiba-weekly-ingest`（月曜20時、`live/run_weekly.ps1`、ログ `logs/weekly_YYYYMMDD.log`）が
   scrape weekly → prep.ingest（ERROR なら止める）→ prep.features → テスト → 前向き検証の集計 を行う。
 - スナップショットはタスクスケジューラ（`keiba-odds-snapshot` → `live/run_snapshot_hidden.vbs`）が毎日起動して貯める。**開催日はPCの電源を切らないこと**（スリープは可）。
