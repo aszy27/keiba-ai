@@ -10,7 +10,9 @@
 #         python -m scrape odds-exotic --years 2020 --types 7,8 [--limit 500]
 #         python -m scrape odds-exotic --job 2021-2025:7,8 --job 2020-2025:4,6 --max-requests 3000   # 前から順に、上限を共有して取る
 # 注意: 2026-09-17 に短時間で大量に取って API から一時ブロックされた。間隔を詰めないこと。
+import datetime
 import glob
+import json
 import os
 import random
 import sys
@@ -157,10 +159,11 @@ def load_empty():
     return set(zip(d["race_id"], d["bet_type"]))
 
 
-def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_after_fail=20):
+def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_after_fail=20, on_request=None):
     """年 → 券種の順に、取得していないレースを取る。max_requests は今回の実行全体の上限、
     stop_after_fail 回続けて取れなければブロックの兆候とみて止める（翌日に続きから取れる）。
-    戻り値: (今回のリクエスト数, 最後まで取り終えたか)"""
+    on_request はリクエストのたびに呼ぶ（1日の使用回数の記録用）。
+    戻り値: (今回のリクエスト数, 止まった理由)。理由は None（最後まで取り終えた）/ "上限" / "制限" / "ブロックの兆候"""
     from paths import table_path
     exotic_path(0, 0).parent.mkdir(parents=True, exist_ok=True)
     races = pd.read_parquet(table_path("races"), columns=["race_id", "race_date"])
@@ -180,9 +183,11 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                 if max_requests is not None and n_req >= max_requests:
                     save_exotic(buf, year, bet_type)
                     print(f"今回の上限 {max_requests}回に達したので終了（続きは次回）", flush=True)
-                    return n_req, False
+                    return n_req, "上限"
                 rows, status = fetch_exotic(rid, bet_type, session)
                 n_req += 1
+                if on_request:
+                    on_request()
                 if not rows and str(status).strip() == "limit":
                     # 短い間に続けて取ると API が制限をかける（2026-10-03 に判明）。オッズが無いのではないので記録せず、15分控える
                     n_fail += 1
@@ -190,7 +195,7 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                     if n_fail >= 3:
                         save_exotic(buf, year, bet_type)
                         print("制限が続くので今日は終了（続きは次回）", flush=True)
-                        return n_req, False
+                        return n_req, "制限"
                     time.sleep(15 * 60)
                     continue
                 if not rows:
@@ -200,7 +205,7 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                         if n_fail >= stop_after_fail:
                             save_exotic(buf, year, bet_type)
                             print(f"{stop_after_fail}回続けて取得できない（ブロックの兆候）ので終了", flush=True)
-                            return n_req, False
+                            return n_req, "ブロックの兆候"
                     else:   # API は答えたがオッズが無い（取消・中止など）→ 記録して次から飛ばす
                         pd.DataFrame([{"race_id": rid, "bet_type": bet_type, "status": status}]).to_csv(
                             empty_path(), mode="a", index=False, header=not empty_path().exists())
@@ -216,7 +221,7 @@ def run_exotic(years, types, limit=None, sleep=0.7, max_requests=None, stop_afte
                           flush=True)
             save_exotic(buf, year, bet_type)
             print(f"{year}年 {EXOTIC_NAMES[bet_type]}: 完了 {len(todo)}R", flush=True)
-    return n_req, True
+    return n_req, None
 
 
 def parse_job(text):
@@ -229,16 +234,60 @@ def parse_job(text):
     return ys, [int(t) for t in types.split(",")]
 
 
-def run_exotic_jobs(jobs, limit=None, sleep=0.7, max_requests=None):
+def daily_path():
+    from paths import V2_DIR
+    return V2_DIR / "odds_exotic" / "daily_state.json"
+
+
+def load_daily(today):
+    """今日（0時区切り）の {"date", "used": 使ったリクエスト数, "stopped": 制限・ブロックの兆候で止めた理由}"""
+    p = daily_path()
+    if p.exists():
+        st = json.loads(p.read_text(encoding="utf-8"))
+        if st.get("date") == today:
+            return st
+    return {"date": today, "used": 0, "stopped": None}
+
+
+def save_daily(st):
+    p = daily_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def run_exotic_jobs(jobs, limit=None, sleep=0.7, max_requests=None, daily_max=None):
     """(年のリスト, 券種のリスト) を前から順に取る。リクエスト数の上限は全体で共有し、
-    前のジョブを取り終えてから次へ進む（上限・制限・ブロックの兆候で止まったらそこで終わり）"""
+    前のジョブを取り終えてから次へ進む（上限・制限・ブロックの兆候で止まったらそこで終わり）。
+    daily_max は1日（0時区切り）の上限。使った回数を daily_path() に1回ごとに残すので、途中でPCを切って
+    起動し直しても同じ日は残りの回数だけ取る。制限・ブロックの兆候で止まった日は、起動し直しても取らない"""
+    st, on_request = None, None
+    if daily_max is not None:
+        st = load_daily(datetime.date.today().strftime("%Y%m%d"))
+        if st["stopped"]:
+            print(f"今日は「{st['stopped']}」で止めたので取らない（続きは明日）", flush=True)
+            return
+        rest = daily_max - st["used"]
+        print(f"今日の使用 {st['used']}/{daily_max}回", flush=True)
+        if rest <= 0:
+            print(f"今日の上限 {daily_max}回に達しているので取らない（続きは明日）", flush=True)
+            return
+        max_requests = rest if max_requests is None else min(max_requests, rest)
+
+        def on_request():
+            st["used"] += 1
+            save_daily(st)
     used = 0
     for years, types in jobs:
         left = None if max_requests is None else max_requests - used
         if left is not None and left <= 0:
             print(f"今回の上限 {max_requests}回に達したので終了（続きは次回）", flush=True)
             return
-        n, finished = run_exotic(years, types, limit, sleep, left)
+        n, reason = run_exotic(years, types, limit, sleep, left, on_request=on_request)
         used += n
-        if not finished:
+        if reason:
+            if st is not None and reason in ("制限", "ブロックの兆候"):
+                st["stopped"] = reason
+                save_daily(st)
             return

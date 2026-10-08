@@ -37,6 +37,8 @@ def main():
     p.add_argument("--limit", type=int, help="1回の実行で取るレース数の上限")
     p.add_argument("--sleep", type=float, default=0.7)
     p.add_argument("--max-requests", type=int, help="今回の実行全体のリクエスト数の上限")
+    p.add_argument("--daily-max-requests", type=int,
+                   help="1日（0時区切り）のリクエスト数の上限。同じ日に何度起動しても合計がこれを超えない")
     p.add_argument("--weekdays-only", action="store_true", help="金〜日（開催日の前後）は何もしない（スナップショットと API を取り合わないため）")
     p = sub.add_parser("repair", help="レース情報の欠損補完・偽レースの削除")
     p.add_argument("--all", action="store_true", help="train / val / test すべてを対象にする（既定は test のみ）")
@@ -79,7 +81,7 @@ def main():
             jobs = [([int(y) for y in args.years.split(",")], [int(t) for t in args.types.split(",")])]
         else:
             ap.error("odds-exotic には --years か --job が必要")
-        odds.run_exotic_jobs(jobs, args.limit, args.sleep, args.max_requests)
+        odds.run_exotic_jobs(jobs, args.limit, args.sleep, args.max_requests, args.daily_max_requests)
     if args.cmd in ("weekly", "repair"):
         from scrape import repair
         repair.run(all_dirs=getattr(args, "all", False), dry_run=getattr(args, "dry_run", False))
