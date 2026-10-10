@@ -8,6 +8,7 @@
 # ページのたどり方（JRA のサイトはフォームの POST で、cname の末尾の2文字は検査用なので自分では作れない）:
 #   オッズの一覧（cname = pw15oli00/6D） → 開催ごとのページ（pw15orl10{場}{年}{回}{日}{日付}/XX）
 #   → レースごとの単勝・複勝（pw151ou10{場}{年}{回}{日}{R}{日付}Z/XX）
+#   orl・ou の後の2文字は変わる（2026-10-10 に orl00・ouS3 になった）ので、何でも受け付ける。
 #   {場}{年}{回}{日}{R} は netkeiba のレース ID（年・場・回・日・R の順）と1対1で対応する。
 import re
 
@@ -19,8 +20,8 @@ from scrape.common import http_post
 URL = "https://www.jra.go.jp/JRADB/accessO.html"
 LIST_CNAME = "pw15oli00/6D"
 _ACTION = re.compile(r"doAction\('/JRADB/accessO\.html',\s*'([^']+)'\)")
-_MEETING = re.compile(r"^pw15orl10(\d{2})(\d{4})(\d{2})(\d{2})(\d{8})/")
-_RACE = re.compile(r"^pw151ou10(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/")
+_MEETING = re.compile(r"^pw15orl[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{8})/")
+_RACE = re.compile(r"^pw151ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/")
 _cnames = {}   # netkeiba のレース ID → 単勝・複勝のページの cname（日ごとに一度たどれば足りる）
 
 
@@ -92,7 +93,8 @@ def parse_odds(html, race_id):
     m = re.search(r"(\d{1,2})時(\d{1,2})分現在", text)
     for r in rows:
         r["official_datetime"] = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}" if m else ""
-    return rows, ("jra_final" if "最終オッズ" in text else "jra")
+    # 発売中のページも注記に「最終オッズ」の語を含む（2026-10-10 確認）ので、「○時○分現在」があれば発売中とみなす
+    return rows, ("jra" if m else "jra_final" if "最終オッズ" in text else "jra")
 
 
 def fetch_odds(race_id, date, honor_cooldown=False):
