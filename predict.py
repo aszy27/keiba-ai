@@ -8,8 +8,8 @@
 # 判定（--judge）は1,000R以上たまってから候補ごとに1回だけ。一度判定すると result/v2/judged_<候補>.txt が残り、2回目は実行しない。
 # 発走前の買い目（--live）: 出馬表（live/entries.py）→ 特徴量（学習と同じ prep.features）→ 今のオッズ → 期待値が閾値以上の単勝。
 #
-# 使い方: python -m predict --candidate c_all            # これまでの集計（何Rたまったか・途中の成績）
-#         python -m predict --candidate c_all --judge    # 判定（1回だけ）
+# 使い方: python -m predict --candidate cand2            # これまでの集計（何Rたまったか・途中の成績）
+#         python -m predict --candidate cand2 --judge    # 判定（1回だけ）
 #         python -m predict --candidate cand2 --live     # 今日のまだ発走していないレースの買い目（--within 30 で30分以内だけ）
 #         python -m predict --candidate cand2 --live --watch   # 開催日の間ずっと、発走15分前になったレースから順に予測する
 import argparse

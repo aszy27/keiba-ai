@@ -14,6 +14,7 @@
 
 CANDIDATES = {
     # 2026-09-17 登録（docs/rebuild_plan.md「前向き検証」）。凍結タグ forward-c-all と同じ作り方
+    # 2026-10-20 に判定せず打ち切り（買い目がほとんど出ないため。docs/rebuild_plan.md「C[all] の前向き検証の打ち切り」）。記録のため設定は残す
     "c_all": dict(
         registered="2026-09-17", start="2026-09-07",
         base_objective="win", k=1, lam=1.0,

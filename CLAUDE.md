@@ -10,9 +10,9 @@ netkeiba のオッズの API は、ログインしていない人の閲覧回数
 - コードは直下の段階別の構成: ① `scrape/` → ② `prep/`（ingest・features）→ ③ `train.py` → ④ `evaluate.py` → ⑤ `predict.py`。部品は `model/`、
   開催日の自動実行は `live/`、結論が出た検証は `experiments/`。構成と手順は `README.md`、設計・事前登録・全検証の記録は `docs/rebuild_plan.md`、
   論文の形の整理は `docs/paper_draft.md`。スクリプトは `C:\Users\aassz\anaconda3\envs\keiba-ai\python.exe` で、リポジトリ直下から `python -m <モジュール>` で実行する。
-- **前向き検証を2つ事前登録済み。判定前に候補の中身（特徴量・閾値・学習期間）を変えないこと。** 候補の設定は `model/candidates.py`。
-  - `c_all`（2026-09-17 登録、凍結タグ `forward-c-all`）: 176列＋3シード平均、期待値1.2以上の単勝、95%区間。
-    登録どおりだと残差がほぼ何も学ばず、買い目がほとんど出ない見込み（`docs/rebuild_plan.md`「学習と実践の追加」）。
+- **前向き検証は候補2の1つ。判定前に候補の中身（特徴量・閾値・学習期間）を変えないこと。** 候補の設定は `model/candidates.py`。
+  - `c_all`（2026-09-17 登録、凍結タグ `forward-c-all`）は 2026-10-20 に判定せず打ち切った（買い目がほとんど出ないため。
+    `docs/rebuild_plan.md`「C[all] の前向き検証の打ち切り」）。設定と `models/v2/c_all/` は記録として残す。
   - `cand2`（2026-10-01 登録、凍結タグ `forward-cand2`）: 基礎モデルを1〜3着で学習＋残差4版の対数プーリング、期待値1.3以上の単勝、97.5%区間、回収率は実際の払戻。2026-10-02 以降。
   - 発走3分前のスナップショット（`data/v2/odds_snapshots/`）で、1,000R たまってから `python -m predict --candidate <候補> --judge` を候補ごとに1回だけ。
   - 本番用モデル `models/v2/` は Git 管理外なので消さないこと（作り直すと、毎週の取り込みで過去の特徴量が少し変わっている分だけ別物になる）。

@@ -1,6 +1,6 @@
 ﻿# live/run_weekly.ps1
 # 毎週の取り込みを、タスクスケジューラ（keiba-weekly-ingest、月曜の夜）から起動するための入れ物。
-#   python -m scrape weekly → python -m prep.ingest → python -m prep.features → テスト → 前向き検証の集計（c_all・cand2）
+#   python -m scrape weekly → python -m prep.ingest → python -m prep.features → テスト → 前向き検証の集計（cand2。c_all は 2026-10-20 に打ち切り）
 #   - 取り込みの検査で ERROR があれば（prep.ingest の終了コードが 0 以外）、特徴量は作り直さずに止める
 #   - 出力は logs/weekly_YYYYMMDD.log。取得中はPCをスリープさせない
 #   - 特徴量の作り直しはメモリを多く使う（数GB）ので、ゲームなどで重いときは失敗することがある（ログに残る。手動でやり直せる）
@@ -36,7 +36,6 @@ try {
         $features = Step '特徴量の作り直し' '-m prep.features'
         $null = Step 'テスト' '-m pytest tests scrape/tests -q'
         if ($features -eq 0) {
-            $null = Step '前向き検証の集計（c_all）' '-W ignore -m predict --candidate c_all'
             $null = Step '前向き検証の集計（cand2）' '-W ignore -m predict --candidate cand2'
         }
     }
