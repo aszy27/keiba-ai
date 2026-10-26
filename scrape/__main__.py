@@ -53,6 +53,7 @@ def main():
     p.add_argument("--minutes", default=None, help="発走の何分前に取るか（カンマ区切り。既定は snapshot.LADDER）")
     p.add_argument("--now", action="store_true", help="待たずに全レースを1回ずつ取得する（動作確認用）")
     p.add_argument("--out-dir", type=Path, default=None, help="保存先（既定は data/v2/odds_snapshots）")
+    p.add_argument("--no-exotic", action="store_true", help="3連複・3連単を取らない（単勝・複勝だけ）")
     args = ap.parse_args()
 
     if args.cmd in ("weekly", "results"):

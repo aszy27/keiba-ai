@@ -1,6 +1,8 @@
+import gzip
 from pathlib import Path
 
-from scrape.jra_odds import meeting_links, parse_odds, race_links
+from scrape import jra_odds
+from scrape.jra_odds import meeting_links, parse_exotic, parse_odds, race_links
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -33,3 +35,31 @@ def test_parse_final_odds():
 def test_presale_page_without_numbers():
     html = '<table class="tanpuku"><tr><td class="num">1</td><td class="odds_tan">----</td><td class="odds_fuku">----</td></tr></table>'
     assert parse_odds(html, "x") == ([], "jra_presale")
+
+
+def _gz(name):
+    return gzip.decompress((FIX / name).read_bytes()).decode("utf-8")
+
+
+def test_parse_trio_all_combinations():
+    """東京11R 2026-10-25（16頭）の3連複の全通り。netkeiba の確定オッズと560通りすべて一致することを確認したページ"""
+    rows, status = parse_exotic(_gz("jra_trio_202605040911.html.gz"), "202605040911", "trio")
+    assert status == "jra_final" and len(rows) == 560 and len({r["combo"] for r in rows}) == 560
+    odds = {r["combo"]: r["odds"] for r in rows}
+    assert odds["010204"] == 28.1 and odds["010203"] == 169.6                  # 表の見出し「1-2」の行 4・3
+    assert all(r["combo"][:2] < r["combo"][2:4] < r["combo"][4:] for r in rows)   # 馬番の昇順（API と同じ表記）
+
+
+def test_parse_trifecta_all_combinations():
+    """同じレースの3連単の全通り（3,360通り、netkeiba の確定オッズとすべて一致）"""
+    rows, status = parse_exotic(_gz("jra_trifecta_202605040911.html.gz"), "202605040911", "trifecta")
+    assert status == "jra_final" and len(rows) == 3360
+    odds = {r["combo"]: r["odds"] for r in rows}
+    assert odds["010203"] == 992.2 and odds["010204"] == 225.0 and "010201" not in odds   # 1着 1・2着 2 の表。同じ馬は空欄
+
+
+def test_harvest_exotic_links_for_the_whole_day():
+    jra_odds._exotic_cnames.clear()
+    jra_odds.harvest_exotic(_gz("jra_trio_202605040911.html.gz"))
+    assert jra_odds._exotic_cnames[("202605040901", "trio")].startswith("pw157ou1005202604090120261025Z99/")
+    assert ("202605040912", "trio") in jra_odds._exotic_cnames

@@ -5,6 +5,9 @@
 # 開催日の朝に起動しておくと、最終レースまで待機しながら取得を続ける（PCがスリープしないようにしておく）。
 # 実際にはタスクスケジューラ（keiba-odds-snapshot → live/run_snapshot_hidden.vbs → live/run_snapshot.ps1）が毎日起動する。
 # 前向き検証の判定に使うデータなので、取得のタイミング・保存形式は判定まで変えないこと。
+# 2026-10-26 から、同じ時点の3連複・3連単（全通り）も JRA 公式から取って <保存先>/exotic/YYYYMMDD_{trio,trifecta}.csv に残す
+# （組み合わせ券の前向き検証用。docs/rebuild_plan.md「組み合わせ券の前向き検証と掛け金の決め方」）。単勝・複勝のファイルの形式は変えず、
+# 取る順番も単勝・複勝が先（その時点に予定のあるレースの単勝・複勝を取り終えてから3連複・3連単を取る）。
 #
 # 使い方: python -m scrape snapshot                          # 今日
 #         python -m scrape snapshot --minutes 10,5,3
@@ -35,6 +38,9 @@ GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切
 API_SPACING_SEC = (5, 8)   # オッズの取得の間隔（秒）。JRA 公式から取る。netkeiba の API は閲覧回数の制限がある（2026-10-03）
 LIMIT_STREAK = 3     # API の status=limit がこの回数続いたら控える
 LIMIT_PAUSE_MIN = 6   # 次の予定（3分前など）に間に合うよう短めに
+EXOTIC_BETS = ["trio", "trifecta"]
+EXOTIC_COLS = ["race_id", "combo", "odds", "minutes_before", "seconds_to_post", "post_time", "fetched_at",
+               "official_datetime", "api_status"]
 
 
 def race_schedule(date):
@@ -135,6 +141,41 @@ def save(path, rows, race_id, minutes, post, status):
           f"{len(rows)}頭 status={status}", flush=True)
 
 
+def exotic_path(out_dir, date, bet):
+    return out_dir / "exotic" / f"{date}_{bet}.csv"
+
+
+def load_done_exotic(out_dir, date):
+    """3連複・3連単を両方とも取り終えた (race_id, 何分前)"""
+    sets = []
+    for bet in EXOTIC_BETS:
+        p = exotic_path(out_dir, date, bet)
+        if not p.exists():
+            return set()
+        d = pd.read_csv(p, usecols=["race_id", "minutes_before"], dtype={"race_id": str}, on_bad_lines="skip")
+        sets.append(set(zip(d["race_id"], pd.to_numeric(d["minutes_before"], errors="coerce"))))
+    return set.intersection(*sets)
+
+
+def save_exotic(out_dir, date, rows, race_id, minutes, post, status, bet):
+    now = datetime.now()
+    path = exotic_path(out_dir, date, bet)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(rows or [{"race_id": race_id}]).assign(
+        minutes_before=minutes, seconds_to_post=round((post - now).total_seconds()), post_time=f"{post:%H:%M}",
+        fetched_at=now.isoformat(timespec="seconds"), api_status=status)
+    df.reindex(columns=EXOTIC_COLS).to_csv(path, mode="a", index=False, header=not path.exists(), encoding="utf-8")
+    print(f"  {now:%H:%M:%S} {race_id} 発走{minutes}分前 {bet} {len(rows)}通り status={status}", flush=True)
+
+
+def fetch_save_exotic(out_dir, date, race_id, minutes, post):
+    from scrape import jra_odds
+    for bet in EXOTIC_BETS:
+        rows, status = jra_odds.fetch_exotic(race_id, date, bet)
+        save_exotic(out_dir, date, rows, race_id, minutes, post, status, bet)
+        time.sleep(random.uniform(*API_SPACING_SEC))
+
+
 def run(args):
     """args: date / minutes / now / out_dir"""
     out_dir = args.out_dir or OUT_DIR
@@ -151,11 +192,14 @@ def run(args):
             rows, status = fetch_odds(rid, args.date)
             save(out, rows, rid, -1, post, status)
             time.sleep(random.uniform(*API_SPACING_SEC))
+            if not args.no_exotic:
+                fetch_save_exotic(out_dir, args.date, rid, -1, post)
         print("完了:", out)
         return
 
     minutes = sorted((int(m) for m in args.minutes.split(",")) if args.minutes else LADDER, reverse=True)
     done = load_done(out)
+    done_x = set() if args.no_exotic else load_done_exotic(out_dir, args.date)
     backoff = LimitBackoff(out_dir / "limit_state.json")
     print(f"取得予定: 1レースあたり {minutes} 分前 / 取得済み {len(done)} 件", flush=True)
     while True:
@@ -182,6 +226,18 @@ def run(args):
                 done.update((rid, mm) for mm in latest[rid])   # 制限中で取れなかったものは、解けたら取り直す
             backoff.record(status, datetime.now())
             time.sleep(random.uniform(*API_SPACING_SEC))
+        # 3連複・3連単: 単勝・複勝を取り終えた時点のうち、まだ取っていないもの（予定の窓の中だけ。たまっていたら1回でまとめる）
+        if not args.no_exotic:
+            now = datetime.now()
+            due_x = {}
+            for rid, post in schedule:
+                ms = [m for m in minutes if (rid, m) in done and (rid, m) not in done_x
+                      and post - timedelta(minutes=m) <= now <= post + timedelta(seconds=GRACE_SEC)]
+                if ms:
+                    due_x[rid] = (post, ms)
+            for rid, (post, ms) in sorted(due_x.items(), key=lambda x: x[1][0]):
+                fetch_save_exotic(out_dir, args.date, rid, min(ms), post)
+                done_x.update((rid, m) for m in ms)
         if not backoff.allow(datetime.now()):
             time.sleep(TICK_SEC)
     print("完了:", out)

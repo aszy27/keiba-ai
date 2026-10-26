@@ -10,6 +10,8 @@
 #   → レースごとの単勝・複勝（pw151ou10{場}{年}{回}{日}{R}{日付}Z/XX）
 #   orl・ou の後の2文字は変わる（2026-10-10 に orl00・ouS3 になった）ので、何でも受け付ける。
 #   {場}{年}{回}{日}{R} は netkeiba のレース ID（年・場・回・日・R の順）と1対1で対応する。
+#   3連複は pw157ou…Z99/XX（全通り）、3連単は pw158ou…Z/XX（全通り）。単勝・複勝のページと、3連複・3連単のページ自身に
+#   その日のレースの分のリンクがあるので、見つけたものを覚えておく（2026-10-26 確認。3連単の全通りのページは18頭で約0.7MB）。
 import re
 
 import numpy as np
@@ -22,7 +24,10 @@ LIST_CNAME = "pw15oli00/6D"
 _ACTION = re.compile(r"doAction\('/JRADB/accessO\.html',\s*'([^']+)'\)")
 _MEETING = re.compile(r"^pw15orl[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{8})/")
 _RACE = re.compile(r"^pw151ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/")
+_EXOTIC = {"trio": re.compile(r"^pw157ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z99/"),
+           "trifecta": re.compile(r"^pw158ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/")}
 _cnames = {}   # netkeiba のレース ID → 単勝・複勝のページの cname（日ごとに一度たどれば足りる）
+_exotic_cnames = {}   # (レース ID, 券種) → 3連複・3連単のページの cname
 
 
 def _post(cname, honor_cooldown=True):
@@ -97,6 +102,84 @@ def parse_odds(html, race_id):
     return rows, ("jra" if m else "jra_final" if "最終オッズ" in text else "jra")
 
 
+def _status(text):
+    """「○時○分現在」があれば発売中（jra）、無くて「最終オッズ」があれば jra_final"""
+    m = re.search(r"(\d{1,2})時(\d{1,2})分現在", text)
+    official = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}" if m else ""
+    return official, ("jra" if m else "jra_final" if "最終オッズ" in text else "jra")
+
+
+def harvest_exotic(html):
+    """ページの中の3連複・3連単のリンクを覚える"""
+    for c in _ACTION.findall(html):
+        for bet, pat in _EXOTIC.items():
+            m = pat.match(c)
+            if m:
+                place, year, kai, day, r = m.group(1, 2, 3, 4, 5)
+                _exotic_cnames[(f"{year}{place}{kai}{day}{r}", bet)] = c
+
+
+def parse_exotic(html, race_id, bet):
+    """3連複・3連単（全通り）のページ → (行の一覧, 状態)。行は {race_id, combo, odds, official_datetime}。
+    combo は netkeiba の API と同じ表記（馬番2桁ずつ。3連複は昇順、3連単は着順）。取消などで空欄の組み合わせは含めない"""
+    soup = BeautifulSoup(html, "html.parser")
+    official, status = _status(soup.get_text(" ", strip=True))
+    rows = []
+
+    def add(nums, td):
+        v = _num(td.get_text(strip=True)) if td else np.nan
+        if np.isfinite(v) and v > 0:
+            rows.append({"race_id": race_id, "combo": "".join(f"{n:02d}" for n in nums), "odds": v,
+                         "official_datetime": official})
+
+    if bet == "trio":
+        for t in soup.find_all("table", class_="fuku3"):
+            cap = t.find("caption")
+            m = re.fullmatch(r"(\d+)-(\d+)", cap.get_text(strip=True)) if cap else None
+            if not m:
+                continue
+            for tr in t.find_all("tr"):
+                th = tr.find("th")
+                if th and th.get_text(strip=True).isdigit():
+                    add(sorted((int(m.group(1)), int(m.group(2)), int(th.get_text(strip=True)))), tr.find("td"))
+    elif bet == "trifecta":
+        for li in soup.select("ul.tan3_list > li"):
+            heads = [d.get_text(strip=True) for d in li.select("div.p_line div.num")]
+            t = li.find("table", class_="tan3")
+            if len(heads) != 2 or not all(h.isdigit() for h in heads) or t is None:
+                continue
+            for tr in t.find_all("tr"):
+                th = tr.find("th")
+                if th and th.get_text(strip=True).isdigit():
+                    add((int(heads[0]), int(heads[1]), int(th.get_text(strip=True))), tr.find("td"))
+    else:
+        raise ValueError(bet)
+    if not rows:
+        return [], "jra_presale" if soup.find("table", class_="fuku3" if bet == "trio" else "tan3") else "jra_no_table"
+    return rows, status
+
+
+def fetch_exotic(race_id, date, bet, honor_cooldown=False):
+    """1レースの3連複・3連単（全通り、JRA 公式）→ (行, 状態)。リンクを知らなければ、そのレースの単勝・複勝のページから探す"""
+    if (race_id, bet) not in _exotic_cnames:
+        if race_id not in _cnames:
+            discover(date, honor_cooldown)
+        if race_id not in _cnames:
+            return [], "error: jra_no_link"
+        html, status = _post(_cnames[race_id], honor_cooldown)
+        if html is None:
+            return [], f"error: {status}"
+        harvest_exotic(html)
+    cname = _exotic_cnames.get((race_id, bet))
+    if cname is None:
+        return [], "error: jra_no_link"
+    html, status = _post(cname, honor_cooldown)
+    if html is None:
+        return [], f"error: {status}"
+    harvest_exotic(html)
+    return parse_exotic(html, race_id, bet)
+
+
 def fetch_odds(race_id, date, honor_cooldown=False):
     """1レースの単勝・複勝（JRA 公式）→ (行, 状態)。date は YYYYMMDD。cname を知らなければその日の分をたどる"""
     if race_id not in _cnames:
@@ -107,4 +190,5 @@ def fetch_odds(race_id, date, honor_cooldown=False):
     html, status = _post(cname, honor_cooldown)
     if html is None:
         return [], f"error: {status}"
+    harvest_exotic(html)
     return parse_odds(html, race_id)
