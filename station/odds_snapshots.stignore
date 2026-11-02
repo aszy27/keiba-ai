@@ -1,0 +1,19 @@
+// .stignore for the Syncthing folder "keiba-odds-snapshots" = <repo>\data\v2\odds_snapshots
+// Put the SAME file in that folder on BOTH PCs (Syncthing does not sync .stignore itself).
+// Synced (first matching pattern wins):
+//   YYYYMMDD.csv                       daily win/place snapshot
+//   exotic/YYYYMMDD_trio.csv           trio (3renpuku) snapshot      (since 2026-10-26)
+//   exotic/YYYYMMDD_trifecta.csv       trifecta (3rentan) snapshot
+//   exotic/YYYYMMDD_quinella.csv       quinella (umaren) snapshot    (since 2026-11-07)
+//   exotic/YYYYMMDD_exacta.csv         exacta (umatan) snapshot
+// Everything else is ignored. check_snapshots.ps1 checks exactly these names.
+// Do NOT add a "!/exotic" line: Syncthing expands it to "!/exotic/**" and would sync everything under exotic/.
+// limit_state.json is per-PC state (the API limit back-off of whichever PC is fetching) -> not synced.
+// Conflict copies are never synced (predict.py reads every *.csv in this folder).
+*.sync-conflict-*
+!/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].csv
+!/exotic/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_trio.csv
+!/exotic/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_trifecta.csv
+!/exotic/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_quinella.csv
+!/exotic/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_exacta.csv
+*
