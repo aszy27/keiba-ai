@@ -51,12 +51,25 @@ def test_exotic_taken_at_the_same_points_after_win(monkeypatch, tmp_path):
         x = pd.read_csv(snapshot.exotic_path(tmp_path, "20261031", bet), dtype={"race_id": str, "combo": str})
         assert set(zip(x["race_id"], x["minutes_before"])) == want and set(x["combo"]) == {"010203"}
     assert list(win.columns) == snapshot.COLS                     # 単勝・複勝のファイルの形式は変えない
-    for rid in ("r1", "r2"):                                       # 単勝・複勝が先、3連複・3連単が後
+    for rid in ("r1", "r2"):                                       # 単勝・複勝が先、3連複・3連単、馬連・馬単の順
         kinds = [k for k, r, _ in calls if r == rid]
-        assert kinds == ["win", "trio", "trifecta"] * 3
+        assert kinds == ["win", "trio", "trifecta", "quinella", "exacta"] * 3
 
 
 def test_restart_does_not_refetch_exotic(monkeypatch, tmp_path):
     _run(monkeypatch, tmp_path, datetime(2026, 10, 31, 9, 0))
     calls = _run(monkeypatch, tmp_path, datetime(2026, 10, 31, 9, 58))   # 起動し直し（3分前の窓の中）
     assert calls == []
+
+
+def test_restart_after_adding_bets_fetches_only_new_ones(monkeypatch, tmp_path):
+    """3連複・3連単だけ取った日に（馬連・馬単を足したコードで）起動し直すと、足りない券種だけ取る"""
+    _run(monkeypatch, tmp_path, datetime(2026, 10, 31, 9, 0))
+    for bet in ("quinella", "exacta"):
+        snapshot.exotic_path(tmp_path, "20261031", bet).unlink()
+    calls = _run(monkeypatch, tmp_path, datetime(2026, 10, 31, 9, 58))
+    # 9:58 に r1（3分前）と r2（30・10分前をまとめて1回）、10:02 に r2（3分前）。単勝・複勝は取り直さない
+    assert [(k, r) for k, r, _ in calls] == [("quinella", "r1"), ("exacta", "r1"), ("quinella", "r2"), ("exacta", "r2"),
+                                             ("quinella", "r2"), ("exacta", "r2")]
+    x = pd.read_csv(snapshot.exotic_path(tmp_path, "20261031", "trio"), dtype={"race_id": str})
+    assert len(x) == 6                                                    # 3連複は取り直していない（2レース × 3時点）

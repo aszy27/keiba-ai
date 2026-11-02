@@ -58,6 +58,32 @@ def test_parse_trifecta_all_combinations():
     assert odds["010203"] == 992.2 and odds["010204"] == 225.0 and "010201" not in odds   # 1着 1・2着 2 の表。同じ馬は空欄
 
 
+def test_parse_quinella_all_combinations():
+    """東京11R 2026-11-01（17頭）の馬連の全通り。netkeiba の確定オッズと136通りすべて一致することを確認したページ"""
+    rows, status = parse_exotic(_gz("jra_quinella_202605041111.html.gz"), "202605041111", "quinella")
+    assert status == "jra_final" and len(rows) == 136 and len({r["combo"] for r in rows}) == 136
+    odds = {r["combo"]: r["odds"] for r in rows}
+    assert odds["0102"] == 644.0 and odds["0103"] == 12.4 and odds["0304"] == 301.5   # 表の見出しが1頭目、行が2頭目
+    assert all(r["combo"][:2] < r["combo"][2:] for r in rows)                         # 馬番の昇順（API と同じ表記）
+
+
+def test_parse_exacta_all_combinations():
+    """同じレースの馬単の全通り（272通り、netkeiba の確定オッズとすべて一致）"""
+    rows, status = parse_exotic(_gz("jra_exacta_202605041111.html.gz"), "202605041111", "exacta")
+    assert status == "jra_final" and len(rows) == 272
+    odds = {r["combo"]: r["odds"] for r in rows}
+    assert odds["0102"] == 700.1 and odds["0103"] == 17.5 and odds["0301"] == 34.4 and "0303" not in odds  # 見出しが1着
+
+
+def test_harvest_quinella_exacta_links():
+    jra_odds._exotic_cnames.clear()
+    jra_odds.harvest_exotic(_gz("jra_quinella_202605041111.html.gz"))
+    jra_odds.harvest_exotic(_gz("jra_exacta_202605041111.html.gz"))
+    assert jra_odds._exotic_cnames[("202605041101", "quinella")].startswith("pw154ou1005202604110120261101Z/")
+    assert jra_odds._exotic_cnames[("202605041101", "exacta")].startswith("pw156ou1005202604110120261101Z/")
+    assert ("202605041111", "trio") in jra_odds._exotic_cnames                 # 馬連のページにも3連複のリンクがある
+
+
 def test_harvest_exotic_links_for_the_whole_day():
     jra_odds._exotic_cnames.clear()
     jra_odds.harvest_exotic(_gz("jra_trio_202605040911.html.gz"))

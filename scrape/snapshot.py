@@ -8,6 +8,7 @@
 # 2026-10-26 から、同じ時点の3連複・3連単（全通り）も JRA 公式から取って <保存先>/exotic/YYYYMMDD_{trio,trifecta}.csv に残す
 # （組み合わせ券の前向き検証用。docs/rebuild_plan.md「組み合わせ券の前向き検証と掛け金の決め方」）。単勝・複勝のファイルの形式は変えず、
 # 取る順番も単勝・複勝が先（その時点に予定のあるレースの単勝・複勝を取り終えてから3連複・3連単を取る）。
+# 2026-11-02 から馬連・馬単（全通り）も同じ時点で取り、<保存先>/exotic/YYYYMMDD_{quinella,exacta}.csv に残す（3連複・3連単の後に取る）。
 #
 # 使い方: python -m scrape snapshot                          # 今日
 #         python -m scrape snapshot --minutes 10,5,3
@@ -38,7 +39,7 @@ GRACE_SEC = 60       # 発走後この秒数までは取得を試みる（締切
 API_SPACING_SEC = (5, 8)   # オッズの取得の間隔（秒）。JRA 公式から取る。netkeiba の API は閲覧回数の制限がある（2026-10-03）
 LIMIT_STREAK = 3     # API の status=limit がこの回数続いたら控える
 LIMIT_PAUSE_MIN = 6   # 次の予定（3分前など）に間に合うよう短めに
-EXOTIC_BETS = ["trio", "trifecta"]
+EXOTIC_BETS = ["trio", "trifecta", "quinella", "exacta"]   # 取る順番（前向き検証中の3連複・3連単が先）
 EXOTIC_COLS = ["race_id", "combo", "odds", "minutes_before", "seconds_to_post", "post_time", "fetched_at",
                "official_datetime", "api_status"]
 
@@ -146,15 +147,15 @@ def exotic_path(out_dir, date, bet):
 
 
 def load_done_exotic(out_dir, date):
-    """3連複・3連単を両方とも取り終えた (race_id, 何分前)"""
-    sets = []
+    """取り終えた (race_id, 何分前, 券種)。券種ごとに数えるので、券種を足した日に起動し直しても取り済みの券種は取り直さない"""
+    done = set()
     for bet in EXOTIC_BETS:
         p = exotic_path(out_dir, date, bet)
         if not p.exists():
-            return set()
+            continue
         d = pd.read_csv(p, usecols=["race_id", "minutes_before"], dtype={"race_id": str}, on_bad_lines="skip")
-        sets.append(set(zip(d["race_id"], pd.to_numeric(d["minutes_before"], errors="coerce"))))
-    return set.intersection(*sets)
+        done.update((r, m, bet) for r, m in zip(d["race_id"], pd.to_numeric(d["minutes_before"], errors="coerce")))
+    return done
 
 
 def save_exotic(out_dir, date, rows, race_id, minutes, post, status, bet):
@@ -168,12 +169,25 @@ def save_exotic(out_dir, date, rows, race_id, minutes, post, status, bet):
     print(f"  {now:%H:%M:%S} {race_id} 発走{minutes}分前 {bet} {len(rows)}通り status={status}", flush=True)
 
 
-def fetch_save_exotic(out_dir, date, race_id, minutes, post):
+def fetch_save_exotic(out_dir, date, race_id, minutes, post, bets=EXOTIC_BETS):
     from scrape import jra_odds
-    for bet in EXOTIC_BETS:
+    for bet in bets:
         rows, status = jra_odds.fetch_exotic(race_id, date, bet)
         save_exotic(out_dir, date, rows, race_id, minutes, post, status, bet)
         time.sleep(random.uniform(*API_SPACING_SEC))
+
+
+def exotic_due(schedule, minutes, done, done_x, now):
+    """組み合わせ券: 単勝・複勝を取り終えた時点のうち、まだ取っていない券種があるもの（予定の窓の中だけ）→ {race_id: (発走, [何分前])}。
+    単勝・複勝の予定が無くても見るので、単勝・複勝と組み合わせ券の間で止まって起動し直した時点も取る"""
+    due_x = {}
+    for rid, post in schedule:
+        ms = [m for m in minutes if (rid, m) in done
+              and any((rid, m, b) not in done_x for b in EXOTIC_BETS)
+              and post - timedelta(minutes=m) <= now <= post + timedelta(seconds=GRACE_SEC)]
+        if ms:
+            due_x[rid] = (post, ms)
+    return due_x
 
 
 def run(args):
@@ -207,7 +221,7 @@ def run(args):
         # 予定時刻を過ぎていて、まだ取っていないものを「発走が近い順」に処理する
         due = [(post, rid, m) for rid, post in schedule for m in minutes
                if (rid, m) not in done and post - timedelta(minutes=m) <= now <= post + timedelta(seconds=GRACE_SEC)]
-        if not due:
+        if not due and (args.no_exotic or not exotic_due(schedule, minutes, done, done_x, now)):
             if all(now > post + timedelta(seconds=GRACE_SEC) for _, post in schedule):
                 break
             time.sleep(TICK_SEC)
@@ -226,18 +240,12 @@ def run(args):
                 done.update((rid, mm) for mm in latest[rid])   # 制限中で取れなかったものは、解けたら取り直す
             backoff.record(status, datetime.now())
             time.sleep(random.uniform(*API_SPACING_SEC))
-        # 3連複・3連単: 単勝・複勝を取り終えた時点のうち、まだ取っていないもの（予定の窓の中だけ。たまっていたら1回でまとめる）
         if not args.no_exotic:
-            now = datetime.now()
-            due_x = {}
-            for rid, post in schedule:
-                ms = [m for m in minutes if (rid, m) in done and (rid, m) not in done_x
-                      and post - timedelta(minutes=m) <= now <= post + timedelta(seconds=GRACE_SEC)]
-                if ms:
-                    due_x[rid] = (post, ms)
+            due_x = exotic_due(schedule, minutes, done, done_x, datetime.now())
             for rid, (post, ms) in sorted(due_x.items(), key=lambda x: x[1][0]):
-                fetch_save_exotic(out_dir, args.date, rid, min(ms), post)
-                done_x.update((rid, m) for m in ms)
+                bets = [b for b in EXOTIC_BETS if any((rid, m, b) not in done_x for m in ms)]
+                fetch_save_exotic(out_dir, args.date, rid, min(ms), post, bets)
+                done_x.update((rid, m, b) for m in ms for b in bets)
         if not backoff.allow(datetime.now()):
             time.sleep(TICK_SEC)
     print("完了:", out)

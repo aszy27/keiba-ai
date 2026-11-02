@@ -12,6 +12,7 @@
 #   {場}{年}{回}{日}{R} は netkeiba のレース ID（年・場・回・日・R の順）と1対1で対応する。
 #   3連複は pw157ou…Z99/XX（全通り）、3連単は pw158ou…Z/XX（全通り）。単勝・複勝のページと、3連複・3連単のページ自身に
 #   その日のレースの分のリンクがあるので、見つけたものを覚えておく（2026-10-26 確認。3連単の全通りのページは18頭で約0.7MB）。
+#   馬連は pw154ou…Z/XX、馬単は pw156ou…Z/XX（どちらも全通りが1ページ、17頭で約0.1MB。2026-11-02 確認）。
 import re
 
 import numpy as np
@@ -25,9 +26,12 @@ _ACTION = re.compile(r"doAction\('/JRADB/accessO\.html',\s*'([^']+)'\)")
 _MEETING = re.compile(r"^pw15orl[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{8})/")
 _RACE = re.compile(r"^pw151ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/")
 _EXOTIC = {"trio": re.compile(r"^pw157ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z99/"),
-           "trifecta": re.compile(r"^pw158ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/")}
+           "trifecta": re.compile(r"^pw158ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/"),
+           "quinella": re.compile(r"^pw154ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/"),
+           "exacta": re.compile(r"^pw156ou[0-9A-Z]{2}(\d{2})(\d{4})(\d{2})(\d{2})(\d{2})(\d{8})Z/")}
+_PAIR_TABLE = {"quinella": "umaren", "exacta": "umatan"}   # 馬連・馬単のページの表（見出しが1頭目、行が2頭目）
 _cnames = {}   # netkeiba のレース ID → 単勝・複勝のページの cname（日ごとに一度たどれば足りる）
-_exotic_cnames = {}   # (レース ID, 券種) → 3連複・3連単のページの cname
+_exotic_cnames = {}   # (レース ID, 券種) → 組み合わせ券のページの cname
 
 
 def _post(cname, honor_cooldown=True):
@@ -110,7 +114,7 @@ def _status(text):
 
 
 def harvest_exotic(html):
-    """ページの中の3連複・3連単のリンクを覚える"""
+    """ページの中の組み合わせ券（馬連・馬単・3連複・3連単）のリンクを覚える"""
     for c in _ACTION.findall(html):
         for bet, pat in _EXOTIC.items():
             m = pat.match(c)
@@ -120,8 +124,8 @@ def harvest_exotic(html):
 
 
 def parse_exotic(html, race_id, bet):
-    """3連複・3連単（全通り）のページ → (行の一覧, 状態)。行は {race_id, combo, odds, official_datetime}。
-    combo は netkeiba の API と同じ表記（馬番2桁ずつ。3連複は昇順、3連単は着順）。取消などで空欄の組み合わせは含めない"""
+    """組み合わせ券（全通り）のページ → (行の一覧, 状態)。行は {race_id, combo, odds, official_datetime}。
+    combo は netkeiba の API と同じ表記（馬番2桁ずつ。馬連・3連複は昇順、馬単・3連単は着順）。取消などで空欄の組み合わせは含めない"""
     soup = BeautifulSoup(html, "html.parser")
     official, status = _status(soup.get_text(" ", strip=True))
     rows = []
@@ -152,15 +156,26 @@ def parse_exotic(html, race_id, bet):
                 th = tr.find("th")
                 if th and th.get_text(strip=True).isdigit():
                     add((int(heads[0]), int(heads[1]), int(th.get_text(strip=True))), tr.find("td"))
+    elif bet in _PAIR_TABLE:
+        for t in soup.find_all("table", class_=_PAIR_TABLE[bet]):
+            cap = t.find("caption")
+            if not (cap and cap.get_text(strip=True).isdigit()):
+                continue
+            for tr in t.find_all("tr"):
+                th = tr.find("th")
+                if th and th.get_text(strip=True).isdigit():
+                    nums = (int(cap.get_text(strip=True)), int(th.get_text(strip=True)))
+                    add(sorted(nums) if bet == "quinella" else nums, tr.find("td"))
     else:
         raise ValueError(bet)
     if not rows:
-        return [], "jra_presale" if soup.find("table", class_="fuku3" if bet == "trio" else "tan3") else "jra_no_table"
+        table = {"trio": "fuku3", "trifecta": "tan3"}.get(bet) or _PAIR_TABLE[bet]
+        return [], "jra_presale" if soup.find("table", class_=table) else "jra_no_table"
     return rows, status
 
 
 def fetch_exotic(race_id, date, bet, honor_cooldown=False):
-    """1レースの3連複・3連単（全通り、JRA 公式）→ (行, 状態)。リンクを知らなければ、そのレースの単勝・複勝のページから探す"""
+    """1レースの組み合わせ券（全通り、JRA 公式）→ (行, 状態)。リンクを知らなければ、そのレースの単勝・複勝のページから探す"""
     if (race_id, bet) not in _exotic_cnames:
         if race_id not in _cnames:
             discover(date, honor_cooldown)
